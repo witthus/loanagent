@@ -26,6 +26,7 @@ from loanagent.mqtt_bus import MqttCommandBus
 from loanagent.roles import AccountRole
 from loanagent.task_routes import router as task_router
 from loanagent.tasks import TaskService
+from loanagent.web.routes import router as ops_web_router
 
 
 @asynccontextmanager
@@ -50,6 +51,7 @@ app = FastAPI(
     lifespan=lifespan,
 )
 app.include_router(task_router)
+app.include_router(ops_web_router)
 
 
 @app.get("/health")

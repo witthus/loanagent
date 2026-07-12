@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+
+{% block title %}Ops Tasks{% endblock %}
+
+{% block content %}
+<h2>Tasks</h2>
+<table>
+  <thead>
+    <tr>
+      <th>Task ID</th>
+      <th>Status</th>
+      <th>Playbook</th>
+      <th>Account ID</th>
+      <th>Device ID</th>
+      <th>Effect</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for task in tasks %}
+    <tr>
+      <td>{{ task.task_id }}</td>
+      <td>{{ task.status }}</td>
+      <td>{{ task.playbook }}</td>
+      <td>{{ task.account_id }}</td>
+      <td>{{ task.device_id }}</td>
+      <td>{{ task.effect_class }}</td>
+    </tr>
+    {% else %}
+    <tr>
+      <td colspan="6">No tasks</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endblock %}
