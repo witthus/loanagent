@@ -1,0 +1,209 @@
+# Local development only. This file is not a production deployment manifest.
+name: loanagent-dev
+
+x-security: &default-security
+  cap_drop:
+    - ALL
+  security_opt:
+    - no-new-privileges:true
+
+services:
+  control-plane:
+    <<: *default-security
+    build:
+      context: ..
+      dockerfile: docker/control-plane/Dockerfile
+      target: dev
+    working_dir: /workspace/control-plane
+    command:
+      - uv
+      - run
+      - --frozen
+      - uvicorn
+      - loanagent.main:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+    environment:
+      HOME: /home/loanagent
+      UV_PROJECT_ENVIRONMENT: /home/loanagent/.venv
+      DATABASE_URL: postgresql://${POSTGRES_USER:-loanagent}:${POSTGRES_PASSWORD:-dev-only-postgres}@postgres:5432/${POSTGRES_DB:-loanagent}
+      MQTT_URL: mqtt://emqx:1883
+      OPS_TOKEN: ${OPS_TOKEN:-dev-only-ops-token}
+      DEVICE_TOKEN: ${DEVICE_TOKEN:-dev-only-device-token}
+      S3_ENDPOINT: http://minio:9000
+    volumes:
+      - type: bind
+        source: ../control-plane
+        target: /workspace/control-plane
+        read_only: true
+      - type: bind
+        source: ../schemas
+        target: /workspace/schemas
+        read_only: true
+      - type: bind
+        source: ../android
+        target: /workspace/android
+        read_only: true
+      - control-plane-venv:/home/loanagent/.venv
+      - control-plane-uv-cache:/home/loanagent/.cache/uv
+    tmpfs:
+      - /tmp
+    ports:
+      - "127.0.0.1:8000:8000"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request; urllib.request.urlopen("http://localhost:8000/health", timeout=2)
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+    depends_on:
+      postgres:
+        condition: service_healthy
+      emqx:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+
+  control-plane-tools:
+    <<: *default-security
+    profiles: ["tools"]
+    build:
+      context: ..
+      dockerfile: docker/control-plane/Dockerfile
+      target: dev
+    working_dir: /workspace/control-plane
+    command: ["uv", "--version"]
+    environment:
+      HOME: /home/loanagent
+      UV_PROJECT_ENVIRONMENT: /home/loanagent/.venv
+      DATABASE_URL: postgresql://${POSTGRES_USER:-loanagent}:${POSTGRES_PASSWORD:-dev-only-postgres}@postgres:5432/${POSTGRES_DB:-loanagent}
+      OPS_TOKEN: ${OPS_TOKEN:-dev-only-ops-token}
+      DEVICE_TOKEN: ${DEVICE_TOKEN:-dev-only-device-token}
+    volumes:
+      - type: bind
+        source: ../control-plane
+        target: /workspace/control-plane
+      - type: bind
+        source: ../schemas
+        target: /workspace/schemas
+        read_only: true
+      - type: bind
+        source: ../ops
+        target: /workspace/ops
+      - control-plane-venv:/home/loanagent/.venv
+      - control-plane-uv-cache:/home/loanagent/.cache/uv
+    tmpfs:
+      - /tmp
+
+  postgres:
+    <<: *default-security
+    image: postgres:16.9-alpine@sha256:7c688148e5e156d0e86df7ba8ae5a05a2386aaec1e2ad8e6d11bdf10504b1fb7
+    user: postgres
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-loanagent}
+      POSTGRES_USER: ${POSTGRES_USER:-loanagent}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-dev-only-postgres}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-loanagent} -d ${POSTGRES_DB:-loanagent}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  emqx:
+    <<: *default-security
+    image: emqx/emqx:5.8.6@sha256:a1e3d10fa1dcc8c94325b815a93b5b5974253a97cb36470b44e47d5d3ef9cd13
+    environment:
+      EMQX_DASHBOARD__DEFAULT_USERNAME: ${EMQX_DASHBOARD_USER:-admin}
+      EMQX_DASHBOARD__DEFAULT_PASSWORD: ${EMQX_DASHBOARD_PASSWORD:-dev-only-emqx}
+      EMQX_NODE__COOKIE: ${EMQX_NODE_COOKIE:-dev-only-emqx-cookie}
+    volumes:
+      - emqx-data:/opt/emqx/data
+      - emqx-log:/opt/emqx/log
+    ports:
+      - "127.0.0.1:1883:1883"
+      - "127.0.0.1:18083:18083"
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/emqx/bin/emqx ctl status >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+  minio:
+    <<: *default-security
+    image: minio/minio:RELEASE.2025-04-22T22-12-26Z@sha256:a1ea29fa28355559ef137d71fc570e508a214ec84ff8083e39bc5428980b015e
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-loanagent}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-dev-only-minio}
+    volumes:
+      - minio-data:/data
+    ports:
+      - "127.0.0.1:9000:9000"
+      - "127.0.0.1:9001:9001"
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
+  android-builder:
+    <<: *default-security
+    profiles: ["android"]
+    platform: linux/amd64
+    build:
+      context: ..
+      dockerfile: docker/android/Dockerfile
+    working_dir: /workspace/android
+    environment:
+      HOME: /home/gradle/.gradle/adb-home
+      ANDROID_USER_HOME: /home/gradle/.gradle/android-home
+      LOANAGENT_BUILD_DIR: /home/gradle/work/build
+    command:
+      - ./gradlew
+      - tasks
+      - -Dorg.gradle.dependency.verification.console=verbose
+      - --no-daemon
+      - --project-cache-dir
+      - /home/gradle/work/project-cache
+      - --dependency-verification=strict
+    volumes:
+      - ../android/settings.gradle.kts:/workspace/android/settings.gradle.kts:ro
+      - ../android/build.gradle.kts:/workspace/android/build.gradle.kts:ro
+      - ../android/gradle.properties:/workspace/android/gradle.properties:ro
+      - ../android/gradlew:/workspace/android/gradlew:ro
+      - ../android/gradle:/workspace/android/gradle:ro
+      - ../android/gradle/verification-metadata.xml:/workspace/android/gradle/verification-metadata.xml:ro
+      - ../android/agent/build.gradle.kts:/workspace/android/agent/build.gradle.kts:ro
+      - ../android/agent/gradle.lockfile:/workspace/android/agent/gradle.lockfile:ro
+      - ../android/agent/src:/workspace/android/agent/src:ro
+      - ../android/device-controller/build.gradle.kts:/workspace/android/device-controller/build.gradle.kts:ro
+      - ../android/device-controller/gradle.lockfile:/workspace/android/device-controller/gradle.lockfile:ro
+      - ../android/device-controller/src:/workspace/android/device-controller/src:ro
+      - ../android/fixture-app/build.gradle.kts:/workspace/android/fixture-app/build.gradle.kts:ro
+      - ../android/fixture-app/gradle.lockfile:/workspace/android/fixture-app/gradle.lockfile:ro
+      - ../android/fixture-app/src:/workspace/android/fixture-app/src:ro
+      - ../ops:/workspace/ops
+      - gradle-cache:/home/gradle/.gradle
+      - android-work:/home/gradle/work
+    tmpfs:
+      - /tmp
+
+volumes:
+  control-plane-venv:
+  control-plane-uv-cache:
+  postgres-data:
+  emqx-data:
+  emqx-log:
+  minio-data:
+  gradle-cache:
+  android-work:

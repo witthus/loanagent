@@ -12,6 +12,16 @@ from loanagent.roles import AccountRole
 
 
 DATABASE_URL = os.environ["DATABASE_URL"]
+OPS_TOKEN = os.environ.setdefault("OPS_TOKEN", "dev-only-ops-token")
+DEVICE_TOKEN = os.environ.setdefault("DEVICE_TOKEN", "dev-only-device-token")
+
+
+def ops_headers() -> dict[str, str]:
+    return {"Authorization": f"Bearer {OPS_TOKEN}"}
+
+
+def device_headers() -> dict[str, str]:
+    return {"X-Device-Token": DEVICE_TOKEN}
 
 
 def unique_id(prefix: str) -> str:
@@ -115,12 +125,39 @@ def test_fleet_migration_records_version_10_without_reusing_enrollment_versions(
     assert accounts_exists is True
 
 
+def test_account_list_requires_ops_bearer() -> None:
+    with TestClient(app) as client:
+        without_header = client.get("/api/v1/accounts")
+        with_bearer = client.get("/api/v1/accounts", headers=ops_headers())
+
+    assert without_header.status_code == 401
+    assert without_header.json()["detail"] == "unauthorized"
+    assert with_bearer.status_code == 200
+
+
+def test_device_heartbeat_requires_device_token() -> None:
+    device_id = unique_id("device-auth")
+
+    with TestClient(app) as client:
+        without_header = client.post(f"/api/v1/devices/{device_id}/heartbeat", json={})
+        with_token = client.post(
+            f"/api/v1/devices/{device_id}/heartbeat",
+            headers=device_headers(),
+            json={},
+        )
+
+    assert without_header.status_code == 401
+    assert without_header.json()["detail"] == "unauthorized"
+    assert with_token.status_code == 200
+
+
 def test_device_heartbeat_api_upserts_online_device_and_lists_it() -> None:
     device_id = unique_id("device-api")
 
     with TestClient(app) as client:
         heartbeat = client.post(
             f"/api/v1/devices/{device_id}/heartbeat",
+            headers=device_headers(),
             json={
                 "agent_version": "0.2.0",
                 "wifi_connected": True,
@@ -128,7 +165,7 @@ def test_device_heartbeat_api_upserts_online_device_and_lists_it() -> None:
                 "cellular_ok": True,
             },
         )
-        devices = client.get("/api/v1/devices")
+        devices = client.get("/api/v1/devices", headers=ops_headers())
 
     assert heartbeat.status_code == 200
     row = heartbeat.json()
@@ -150,9 +187,17 @@ def test_account_api_creates_lists_and_blocks_duplicate_device_binding() -> None
     duplicate_account_id = unique_id("account-duplicate-api")
 
     with TestClient(app) as client:
-        assert client.post(f"/api/v1/devices/{device_id}/heartbeat", json={}).status_code == 200
+        assert (
+            client.post(
+                f"/api/v1/devices/{device_id}/heartbeat",
+                headers=device_headers(),
+                json={},
+            ).status_code
+            == 200
+        )
         main = client.post(
             "/api/v1/accounts",
+            headers=ops_headers(),
             json={
                 "account_id": main_account_id,
                 "role": AccountRole.PUBLISHER_MAIN.value,
@@ -161,6 +206,7 @@ def test_account_api_creates_lists_and_blocks_duplicate_device_binding() -> None
         )
         engager = client.post(
             "/api/v1/accounts",
+            headers=ops_headers(),
             json={
                 "account_id": engager_account_id,
                 "role": AccountRole.ENGAGER.value,
@@ -168,13 +214,14 @@ def test_account_api_creates_lists_and_blocks_duplicate_device_binding() -> None
         )
         duplicate = client.post(
             "/api/v1/accounts",
+            headers=ops_headers(),
             json={
                 "account_id": duplicate_account_id,
                 "role": AccountRole.PUBLISHER_MATRIX.value,
                 "device_id": device_id,
             },
         )
-        accounts = client.get("/api/v1/accounts")
+        accounts = client.get("/api/v1/accounts", headers=ops_headers())
 
     assert main.status_code == 200
     assert main.json()["device_id"] == device_id
@@ -196,6 +243,7 @@ def test_account_api_patches_pauses_and_resumes_account() -> None:
     with TestClient(app) as client:
         created = client.post(
             "/api/v1/accounts",
+            headers=ops_headers(),
             json={
                 "account_id": account_id,
                 "role": AccountRole.ENGAGER.value,
@@ -203,14 +251,21 @@ def test_account_api_patches_pauses_and_resumes_account() -> None:
         )
         patched = client.patch(
             f"/api/v1/accounts/{account_id}",
+            headers=ops_headers(),
             json={
                 "display_name": "Engager Alpha",
                 "daily_publish_quota": 3,
                 "network_policy": "wifi_allowed",
             },
         )
-        paused = client.post(f"/api/v1/accounts/{account_id}/pause")
-        resumed = client.post(f"/api/v1/accounts/{account_id}/resume")
+        paused = client.post(
+            f"/api/v1/accounts/{account_id}/pause",
+            headers=ops_headers(),
+        )
+        resumed = client.post(
+            f"/api/v1/accounts/{account_id}/resume",
+            headers=ops_headers(),
+        )
 
     assert created.status_code == 200
     assert patched.status_code == 200

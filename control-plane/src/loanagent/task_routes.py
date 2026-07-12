@@ -3,9 +3,10 @@ from __future__ import annotations
 from dataclasses import asdict
 from typing import Literal
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, Field
 
+from loanagent.auth import require_ops
 from loanagent.tasks import (
     DuplicateTaskError,
     PlaybookForbiddenError,
@@ -39,7 +40,7 @@ class DeviceTaskEventPayload(BaseModel):
     status: Literal["succeeded"]
 
 
-@router.post("/tasks")
+@router.post("/tasks", dependencies=[Depends(require_ops)])
 def create_task(payload: TaskCreatePayload, request: Request) -> dict:
     service = _task_service(request)
     try:
@@ -83,7 +84,7 @@ def create_task(payload: TaskCreatePayload, request: Request) -> dict:
     return asdict(task)
 
 
-@router.get("/tasks")
+@router.get("/tasks", dependencies=[Depends(require_ops)])
 def list_tasks(
     request: Request,
     account_id: str | None = Query(default=None, min_length=1, max_length=128),
@@ -100,7 +101,9 @@ def list_tasks(
     ]
 
 
-@router.post("/devices/{device_id}/events")
+# This test hook models an ops/console simulation path, so it uses ops auth
+# instead of the device heartbeat token.
+@router.post("/devices/{device_id}/events", dependencies=[Depends(require_ops)])
 def accept_device_event(device_id: str, payload: DeviceTaskEventPayload, request: Request) -> dict:
     service = _task_service(request)
     try:

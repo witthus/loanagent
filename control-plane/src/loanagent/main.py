@@ -4,7 +4,7 @@ from dataclasses import asdict
 from typing import Literal
 import os
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
 
 from loanagent.accounts import (
@@ -14,6 +14,7 @@ from loanagent.accounts import (
     AccountNotFoundError,
     AccountRepository,
 )
+from loanagent.auth import require_device, require_ops
 from loanagent.db import migrate_fleet_schema
 from loanagent.devices import DeviceRepository
 from loanagent.enrollment import (
@@ -147,7 +148,7 @@ def enroll(payload: EnrollmentPayload, request: Request) -> dict[str, str]:
     )
 
 
-@app.post("/api/v1/devices/{device_id}/heartbeat")
+@app.post("/api/v1/devices/{device_id}/heartbeat", dependencies=[Depends(require_device)])
 def heartbeat_device(
     device_id: str,
     payload: DeviceHeartbeatPayload,
@@ -157,13 +158,13 @@ def heartbeat_device(
     return asdict(repository.heartbeat(device_id=device_id, **payload.model_dump()))
 
 
-@app.get("/api/v1/devices")
+@app.get("/api/v1/devices", dependencies=[Depends(require_ops)])
 def list_devices(request: Request) -> list[dict]:
     repository: DeviceRepository = request.app.state.device_repository
     return [asdict(device) for device in repository.list()]
 
 
-@app.post("/api/v1/accounts")
+@app.post("/api/v1/accounts", dependencies=[Depends(require_ops)])
 def create_account(payload: AccountCreatePayload, request: Request) -> dict:
     repository: AccountRepository = request.app.state.account_repository
     try:
@@ -189,13 +190,13 @@ def create_account(payload: AccountCreatePayload, request: Request) -> dict:
     return asdict(account)
 
 
-@app.get("/api/v1/accounts")
+@app.get("/api/v1/accounts", dependencies=[Depends(require_ops)])
 def list_accounts(request: Request) -> list[dict]:
     repository: AccountRepository = request.app.state.account_repository
     return [asdict(account) for account in repository.list()]
 
 
-@app.patch("/api/v1/accounts/{account_id}")
+@app.patch("/api/v1/accounts/{account_id}", dependencies=[Depends(require_ops)])
 def patch_account(
     account_id: str,
     payload: AccountPatchPayload,
@@ -225,7 +226,7 @@ def patch_account(
     return asdict(account)
 
 
-@app.post("/api/v1/accounts/{account_id}/pause")
+@app.post("/api/v1/accounts/{account_id}/pause", dependencies=[Depends(require_ops)])
 def pause_account(account_id: str, request: Request) -> dict:
     repository: AccountRepository = request.app.state.account_repository
     try:
@@ -239,7 +240,7 @@ def pause_account(account_id: str, request: Request) -> dict:
     return asdict(account)
 
 
-@app.post("/api/v1/accounts/{account_id}/resume")
+@app.post("/api/v1/accounts/{account_id}/resume", dependencies=[Depends(require_ops)])
 def resume_account(account_id: str, request: Request) -> dict:
     repository: AccountRepository = request.app.state.account_repository
     try:

@@ -21,7 +21,12 @@ from loanagent.tasks import DuplicateTaskError, TaskService
 
 
 DATABASE_URL = os.environ["DATABASE_URL"]
+OPS_TOKEN = os.environ.setdefault("OPS_TOKEN", "dev-only-ops-token")
 SCHEMA_ROOT = Path(__file__).resolve().parents[2] / "schemas"
+
+
+def ops_headers() -> dict[str, str]:
+    return {"Authorization": f"Bearer {OPS_TOKEN}"}
 
 
 class RecordingMqttBus:
@@ -208,6 +213,24 @@ def test_create_and_dispatch_publishes_schema_valid_account_scoped_command() -> 
     task_schema_validator().validate(payload)
 
 
+def test_create_task_route_requires_ops_bearer() -> None:
+    _, account_id = create_bound_account()
+
+    with TestClient(app) as client:
+        client.app.state.task_service = TaskService(DATABASE_URL, RecordingMqttBus())
+        response = client.post(
+            "/api/v1/tasks",
+            json={
+                "account_id": account_id,
+                "playbook": "ensure_app_ready@1.0",
+                "params": {},
+            },
+        )
+
+    assert response.status_code == 401
+    assert response.json()["detail"] == "unauthorized"
+
+
 def test_create_task_route_marks_task_failed_when_publish_fails() -> None:
     _, account_id = create_bound_account()
     task_id = unique_id("task")
@@ -217,6 +240,7 @@ def test_create_task_route_marks_task_failed_when_publish_fails() -> None:
         client.app.state.task_service = service
         response = client.post(
             "/api/v1/tasks",
+            headers=ops_headers(),
             json={
                 "account_id": account_id,
                 "playbook": "ensure_app_ready@1.0",
@@ -238,6 +262,7 @@ def test_create_task_route_rejects_publish_note_for_engager() -> None:
         client.app.state.task_service = TaskService(DATABASE_URL, RecordingMqttBus())
         response = client.post(
             "/api/v1/tasks",
+            headers=ops_headers(),
             json={
                 "account_id": account_id,
                 "playbook": "publish_note@1.0",
@@ -257,6 +282,7 @@ def test_create_task_route_rejects_paused_account() -> None:
         client.app.state.task_service = TaskService(DATABASE_URL, RecordingMqttBus())
         response = client.post(
             "/api/v1/tasks",
+            headers=ops_headers(),
             json={
                 "account_id": account_id,
                 "playbook": "ensure_app_ready@1.0",
@@ -275,6 +301,7 @@ def test_create_task_route_rejects_offline_device() -> None:
         client.app.state.task_service = TaskService(DATABASE_URL, RecordingMqttBus())
         response = client.post(
             "/api/v1/tasks",
+            headers=ops_headers(),
             json={
                 "account_id": account_id,
                 "playbook": "ensure_app_ready@1.0",
@@ -294,6 +321,7 @@ def test_create_task_route_rejects_unbound_device() -> None:
         client.app.state.task_service = TaskService(DATABASE_URL, RecordingMqttBus())
         response = client.post(
             "/api/v1/tasks",
+            headers=ops_headers(),
             json={
                 "account_id": account_id,
                 "playbook": "ensure_app_ready@1.0",
@@ -314,6 +342,7 @@ def test_create_task_route_rejects_duplicate_task_id_without_republishing() -> N
         client.app.state.task_service = TaskService(DATABASE_URL, mqtt_bus)
         first = client.post(
             "/api/v1/tasks",
+            headers=ops_headers(),
             json={
                 "account_id": account_id,
                 "playbook": "ensure_app_ready@1.0",
@@ -323,6 +352,7 @@ def test_create_task_route_rejects_duplicate_task_id_without_republishing() -> N
         )
         duplicate = client.post(
             "/api/v1/tasks",
+            headers=ops_headers(),
             json={
                 "account_id": account_id,
                 "playbook": "ensure_app_ready@1.0",
@@ -366,6 +396,7 @@ def test_task_route_lists_tasks_with_filters() -> None:
         client.app.state.task_service = TaskService(DATABASE_URL, RecordingMqttBus())
         created = client.post(
             "/api/v1/tasks",
+            headers=ops_headers(),
             json={
                 "account_id": account_id,
                 "playbook": "ensure_app_ready@1.0",
@@ -375,6 +406,7 @@ def test_task_route_lists_tasks_with_filters() -> None:
         )
         listed = client.get(
             "/api/v1/tasks",
+            headers=ops_headers(),
             params={"account_id": account_id, "status": "accepted"},
         )
 
@@ -391,6 +423,7 @@ def test_device_event_hook_marks_readonly_task_succeeded_and_effect_committed() 
         client.app.state.task_service = TaskService(DATABASE_URL, RecordingMqttBus())
         created = client.post(
             "/api/v1/tasks",
+            headers=ops_headers(),
             json={
                 "account_id": account_id,
                 "playbook": "ensure_app_ready@1.0",
@@ -400,6 +433,7 @@ def test_device_event_hook_marks_readonly_task_succeeded_and_effect_committed() 
         )
         event = client.post(
             f"/api/v1/devices/{device_id}/events",
+            headers=ops_headers(),
             json={"task_id": task_id, "status": "succeeded"},
         )
 
