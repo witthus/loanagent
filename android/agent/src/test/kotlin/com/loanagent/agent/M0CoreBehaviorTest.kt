@@ -196,13 +196,40 @@ class M0CoreBehaviorTest {
     }
 
     @Test
-    fun inputStrategyPrefersSetTextAndNeverSilentlySwitchesIme() {
+    fun inputStrategyPrefersSetTextManualImeClipboardAndEditableBlock() {
         val strategy = InputStrategy()
 
-        assertEquals(InputRoute.ACTION_SET_TEXT, strategy.choose(editable = true, setTextSupported = true, imeEnabled = true))
-        assertEquals(InputRoute.MANUAL_IME, strategy.choose(editable = true, setTextSupported = false, imeEnabled = true))
-        assertEquals(InputRoute.BLOCKED_ENABLE_IME_MANUALLY, strategy.choose(editable = true, setTextSupported = false, imeEnabled = false))
-        assertEquals(InputRoute.BLOCKED_NOT_EDITABLE, strategy.choose(editable = false, setTextSupported = true, imeEnabled = true))
+        assertEquals(
+            InputRoute.ACTION_SET_TEXT,
+            strategy.choose(editable = true, setTextSupported = true, imeEnabled = true),
+        )
+        assertEquals(
+            InputRoute.MANUAL_IME,
+            strategy.choose(editable = true, setTextSupported = false, imeEnabled = true),
+        )
+        assertEquals(
+            "CLIPBOARD",
+            strategy.choose(editable = true, setTextSupported = false, imeEnabled = false).name,
+        )
+        assertEquals(
+            InputRoute.BLOCKED_NOT_EDITABLE,
+            strategy.choose(editable = false, setTextSupported = true, imeEnabled = true),
+        )
+    }
+
+    @Test
+    fun inputStrategyBlocksManualImeWhenClipboardIsNotAllowed() {
+        val strategy = InputStrategy()
+
+        assertEquals(
+            InputRoute.BLOCKED_ENABLE_IME_MANUALLY,
+            strategy.choose(
+                editable = true,
+                setTextSupported = false,
+                imeEnabled = false,
+                clipboardAllowed = false,
+            ),
+        )
     }
 
     @Test
