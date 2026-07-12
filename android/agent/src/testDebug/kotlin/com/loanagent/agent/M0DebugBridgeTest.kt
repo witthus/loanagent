@@ -280,6 +280,27 @@ class M0DebugBridgeTest {
     }
 
     @Test
+    fun finalPublishClickWithExplicitOptInAndConfirmationInvokesController() {
+        val controller = DebugFakeController()
+        val writer = RecordingDebugResultWriter()
+
+        M0DebugBridge(
+            { controller },
+            writer,
+            ManualDebugTimeoutScheduler(),
+        ).execute(
+            Intent(M0DebugCommandReceiver.ACTION)
+                .putExtra(M0DebugCommandReceiver.EXTRA_COMMAND, "CLICK")
+                .putExtra(M0DebugCommandReceiver.EXTRA_SELECTOR, "text=发布;clickable=true")
+                .putExtra(M0DebugCommandReceiver.EXTRA_CONFIRMED, true)
+                .putExtra("allow_final_action", true),
+        ) {}
+
+        assertEquals(1, controller.actionCalls)
+        assertTrue(writer.singleResult().contains("\"status\":\"SUCCESS\""))
+    }
+
+    @Test
     fun swipeRequiresConfirmationAndForwardsSwipeSpec() {
         val controller = DebugFakeController()
         val writer = RecordingDebugResultWriter()

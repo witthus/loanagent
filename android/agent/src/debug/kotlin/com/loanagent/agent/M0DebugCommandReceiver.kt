@@ -35,6 +35,7 @@ class M0DebugCommandReceiver : BroadcastReceiver() {
         const val EXTRA_CONDITION = "condition"
         const val EXTRA_TIMEOUT_MS = "timeout_ms"
         const val EXTRA_CONFIRMED = "confirmed"
+        const val EXTRA_ALLOW_FINAL_ACTION = "allow_final_action"
         const val EXTRA_START_X = "start_x"
         const val EXTRA_START_Y = "start_y"
         const val EXTRA_END_X = "end_x"
@@ -348,8 +349,12 @@ internal class M0DebugBridge(
             ?: throw IllegalArgumentException("Missing selector")
         val selector = StrictSelectorParser.parse(rawSelector)
         if (command == DebugCommand.CLICK && FinalActionPolicy.blocks(selector)) {
-            finish("FINAL_ACTION_UNSUPPORTED", null)
-            return CompletedRequestHandle
+            val allowFinal = intent.getBooleanExtra(M0DebugCommandReceiver.EXTRA_ALLOW_FINAL_ACTION, false)
+            val confirmed = intent.getBooleanExtra(M0DebugCommandReceiver.EXTRA_CONFIRMED, false)
+            if (!(allowFinal && confirmed)) {
+                finish("FINAL_ACTION_UNSUPPORTED", null)
+                return CompletedRequestHandle
+            }
         }
         val text = if (command == DebugCommand.SET_TEXT) {
             intent.getStringExtra(M0DebugCommandReceiver.EXTRA_TEXT)

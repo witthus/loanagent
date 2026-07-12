@@ -137,6 +137,8 @@ case "$ACTION" in
   extract-inbox) bridge EXTRACT_INBOX ;;
   extract-thread) bridge EXTRACT_THREAD ;;
   click) bridge CLICK --es selector "$ARG2" --ez confirmed true --ei timeout_ms 8000 ;;
+  # Only the M0-Cap publish step should use click-final; all other clicks stay on click.
+  click-final) bridge CLICK --es selector "$ARG2" --ez confirmed true --ez allow_final_action true --ei timeout_ms 8000 ;;
   set-text) bridge SET_TEXT --es selector "$ARG2" --es text "$ARG3" --ez confirmed true --ei timeout_ms 8000 ;;
   swipe-up)
     bridge SWIPE --ei start_x 540 --ei start_y 1600 --ei end_x 540 --ei end_y 500 \
@@ -151,7 +153,7 @@ case "$ACTION" in
   ocr-save) bridge OCR_SAVE --ei timeout_ms 8000 --ez confirmed true ;;
   clear-cache) bridge CLEAR_CACHE ;;
   *)
-    echo "Usage: run-redmi-matrix.sh {ensure-bound|wake-xhs|wake-fixture|observe|extract-comments|extract-inbox|extract-thread|click|set-text|swipe-up|swipe-down|wait|ocr|ocr-save|clear-cache}"
+    echo "Usage: run-redmi-matrix.sh {ensure-bound|wake-xhs|wake-fixture|observe|extract-comments|extract-inbox|extract-thread|click|click-final|set-text|swipe-up|swipe-down|wait|ocr|ocr-save|clear-cache}"
     exit 1
     ;;
 esac
