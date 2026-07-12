@@ -3,7 +3,7 @@ from __future__ import annotations
 import psycopg
 
 
-FLEET_SCHEMA_VERSION = 10
+FLEET_SCHEMA_VERSION = 11
 
 
 def migrate_fleet_schema(database_url: str) -> None:
@@ -27,7 +27,7 @@ def migrate_fleet_schema(database_url: str) -> None:
             ).fetchall()
         }
 
-        if FLEET_SCHEMA_VERSION not in applied:
+        if 10 not in applied:
             connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS devices (
@@ -64,7 +64,41 @@ def migrate_fleet_schema(database_url: str) -> None:
                 )
                 """
             )
-            _record_migration(connection, FLEET_SCHEMA_VERSION)
+            _record_migration(connection, 10)
+
+        if 11 not in applied:
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS tasks (
+                    task_id TEXT PRIMARY KEY,
+                    operation_id TEXT NOT NULL,
+                    device_id TEXT NOT NULL REFERENCES devices(device_id),
+                    account_id TEXT NOT NULL REFERENCES accounts(account_id),
+                    playbook TEXT NOT NULL,
+                    params JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    effect_class TEXT NOT NULL CHECK (
+                        effect_class IN ('readonly','idempotent','non_idempotent')
+                    ),
+                    effect_committed BOOLEAN NOT NULL DEFAULT FALSE,
+                    status TEXT NOT NULL CHECK (
+                        status IN (
+                            'queued','accepted','executing','effect_committed','reported',
+                            'succeeded','failed','cancelled','unknown','reconcile_required'
+                        )
+                    ),
+                    reconcile_required BOOLEAN NOT NULL DEFAULT FALSE,
+                    priority INT NOT NULL DEFAULT 100 CHECK (priority >= 0 AND priority <= 100),
+                    timeout_sec INT NOT NULL DEFAULT 120 CHECK (timeout_sec >= 1),
+                    source TEXT NOT NULL DEFAULT 'manual' CHECK (
+                        source IN ('scheduler','agent','manual')
+                    ),
+                    error_code TEXT,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+            _record_migration(connection, 11)
 
 
 def _record_migration(connection: psycopg.Connection, version: int) -> None:

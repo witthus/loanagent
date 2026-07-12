@@ -21,7 +21,10 @@ from loanagent.enrollment import (
     EnrollmentConsumeStatus,
     EnrollmentRepository,
 )
+from loanagent.mqtt_bus import MqttCommandBus
 from loanagent.roles import AccountRole
+from loanagent.task_routes import router as task_router
+from loanagent.tasks import TaskService
 
 
 @asynccontextmanager
@@ -33,6 +36,10 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
     application.state.enrollment_repository = enrollment_repository
     application.state.device_repository = DeviceRepository(database_url)
     application.state.account_repository = AccountRepository(database_url)
+    application.state.task_service = TaskService(
+        database_url,
+        MqttCommandBus(os.environ.get("MQTT_URL", "mqtt://localhost:1883")),
+    )
     yield
 
 
@@ -41,6 +48,7 @@ app = FastAPI(
     version="0.1.0",
     lifespan=lifespan,
 )
+app.include_router(task_router)
 
 
 @app.get("/health")

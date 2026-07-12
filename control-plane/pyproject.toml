@@ -1,0 +1,36 @@
+[project]
+name = "loanagent-control-plane"
+version = "0.1.0"
+description = "Minimal control-plane service for the on-device agent fleet"
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "fastapi==0.115.14",
+    "paho-mqtt>=2.1.0",
+    "psycopg[binary]==3.3.4",
+    "uvicorn[standard]==0.34.3",
+]
+
+[dependency-groups]
+dev = [
+    "httpx==0.28.1",
+    "jsonschema[format]==4.24.0",
+    "pytest==8.4.1",
+    "qrcode[pil]==8.2",
+    "ruff==0.12.1",
+]
+
+[build-system]
+requires = ["hatchling==1.27.0"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/loanagent"]
+
+[tool.pytest.ini_options]
+addopts = "-q -p no:cacheprovider"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
