@@ -99,6 +99,29 @@ class M0CoreBehaviorTest {
     }
 
     @Test
+    fun loginCuesWithMessageTextStillClassifiesAsLoginRequired() {
+        val nodes = listOf(
+            UiNode(text = "登录"),
+            UiNode(text = "手机号"),
+            UiNode(text = "验证码"),
+            UiNode(text = "消息"),
+        )
+
+        assertEquals(PageHint.LOGIN_REQUIRED, PageClassifier().classify(nodes))
+    }
+
+    @Test
+    fun businessBlockedCuesWithNotificationTextStillClassifiesAsBusinessBlocked() {
+        val nodes = listOf(
+            UiNode(text = "业务升级"),
+            UiNode(text = "暂不可用"),
+            UiNode(text = "通知"),
+        )
+
+        assertEquals(PageHint.BUSINESS_BLOCKED, PageClassifier().classify(nodes))
+    }
+
+    @Test
     fun redactorNeverPersistsPasswordsOrSensitiveValues() {
         val redactor = SensitiveTextRedactor()
 

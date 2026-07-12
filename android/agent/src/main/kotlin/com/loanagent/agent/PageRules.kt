@@ -43,14 +43,30 @@ class PageClassifier(
         val searchable = nodes.joinToString("\n") {
             listOfNotNull(it.text, it.contentDescription, it.viewId).joinToString(" ")
         }
-        val hasInboxCue = listOf("私信", "通知", "登录|消息").any(searchable::contains) ||
-            (searchable.contains("消息") && !searchable.contains("说点什么"))
-        val hasCommentComposer = searchable.contains("说点什么")
-        if (hasInboxCue && !hasCommentComposer) {
+        val matched = rules.firstOrNull { rule ->
+            rule.anyTerms.count(searchable::contains) >= rule.minimumMatches
+        }?.hint
+        if (matched != null && matched in HIGH_PRIORITY_HINTS) {
+            return matched
+        }
+        val hasStrongInboxCue = searchable.contains("私信") ||
+            searchable.contains("登录|消息") ||
+            (searchable.contains("消息") && searchable.contains("通知")) ||
+            (searchable.contains("消息") && !searchable.contains("说点什么") &&
+                listOf("赞", "收藏", "评论").any(searchable::contains))
+        if (hasStrongInboxCue && !searchable.contains("说点什么")) {
             return PageHint.INBOX
         }
-        return rules.firstOrNull { rule ->
-            rule.anyTerms.count(searchable::contains) >= rule.minimumMatches
-        }?.hint ?: PageHint.UNKNOWN
+        return matched ?: PageHint.UNKNOWN
+    }
+
+    private companion object {
+        val HIGH_PRIORITY_HINTS = setOf(
+            PageHint.BUSINESS_BLOCKED,
+            PageHint.LOGIN_REQUIRED,
+            PageHint.EDITOR,
+            PageHint.PUBLISH_ENTRY,
+            PageHint.COMMENTS,
+        )
     }
 }
