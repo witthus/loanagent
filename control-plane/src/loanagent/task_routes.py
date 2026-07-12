@@ -12,10 +12,10 @@ from loanagent.tasks import (
     ReadonlyTaskRequiredError,
     TaskAccountNotFoundError,
     TaskAccountUnavailableError,
+    TaskDispatchError,
     TaskDeviceUnavailableError,
     TaskNotFoundError,
     TaskService,
-    UnsupportedTaskEventError,
 )
 
 
@@ -74,6 +74,12 @@ def create_task(payload: TaskCreatePayload, request: Request) -> dict:
             "ACCOUNT_NOT_FOUND",
             "Account does not exist.",
         ) from error
+    except TaskDispatchError as error:
+        raise _task_http_error(
+            502,
+            "TASK_DISPATCH_FAILED",
+            "Task dispatch failed after persistence; retry with a new task_id.",
+        ) from error
     return asdict(task)
 
 
@@ -96,8 +102,6 @@ def list_tasks(
 
 @router.post("/devices/{device_id}/events")
 def accept_device_event(device_id: str, payload: DeviceTaskEventPayload, request: Request) -> dict:
-    if payload.status != "succeeded":
-        raise UnsupportedTaskEventError(payload.status)
     service = _task_service(request)
     try:
         task = service.mark_readonly_succeeded_from_event(

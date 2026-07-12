@@ -71,15 +71,17 @@ class TaskDeviceUnavailableError(Exception):
     pass
 
 
+class TaskDispatchError(Exception):
+    def __init__(self, task_id: str) -> None:
+        super().__init__(task_id)
+        self.task_id = task_id
+
+
 class PlaybookForbiddenError(Exception):
     pass
 
 
 class ReadonlyTaskRequiredError(Exception):
-    pass
-
-
-class UnsupportedTaskEventError(Exception):
     pass
 
 
@@ -119,7 +121,11 @@ class TaskService:
             source=source,
         )
         topic = f"devices/{device_id}/commands"
-        self.mqtt_bus.publish(topic, task_command_envelope(queued))
+        try:
+            self.mqtt_bus.publish(topic, task_command_envelope(queued))
+        except Exception as error:
+            self._update_status(task_id, status="failed")
+            raise TaskDispatchError(task_id) from error
         return self._update_status(task_id, status="accepted")
 
     def list(
@@ -289,6 +295,7 @@ def task_command_envelope(task: TaskRecord) -> dict[str, Any]:
         "schema_version": TASK_SCHEMA_VERSION,
         "task_id": task.task_id,
         "operation_id": task.operation_id,
+        "account_id": task.account_id,
         "playbook": task.playbook,
         "params": task.params,
         "effect_class": task.effect_class,
