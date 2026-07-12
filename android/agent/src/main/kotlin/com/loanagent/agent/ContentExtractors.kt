@@ -51,10 +51,12 @@ class ContentExtractors(
         var index = 0
         while (index < entries.size && results.size < maxItems.coerceAtLeast(0)) {
             val title = entries[index]
-            val preview = entries.getOrNull(index + 1)
-            if (title.node.clickable || looksLikeShortLabel(title.raw)) {
+            if (isInboxTitle(title)) {
                 val titleSummary = summarize(title.raw, TITLE_LIMIT)
                 if (titleSummary.isNotBlank()) {
+                    val candidate = entries.getOrNull(index + 1)
+                    // Do not consume another clickable/title row as this thread's preview.
+                    val preview = candidate?.takeUnless { isInboxTitle(it) }
                     val previewText = preview?.raw.orEmpty()
                     results += ExtractedInboxThread(
                         titleSummary = titleSummary,
@@ -124,8 +126,11 @@ class ContentExtractors(
         } else {
             ""
         }
-        return "index=${entry.index};text_hash=${entry.raw.hashCode()}$boundsHint"
+        return "index=${entry.index}$boundsHint"
     }
+
+    private fun isInboxTitle(entry: TextEntry): Boolean =
+        entry.node.clickable
 
     private fun looksLikeShortLabel(value: String): Boolean =
         value.length <= AUTHOR_LIMIT && !hasSentencePunctuation(value) && !hasUnreadHint(value)
