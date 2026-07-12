@@ -5,6 +5,10 @@
 
 ## 当前门禁
 
+- M0-Cap 三能力门禁：`OPEN` / `NOT_CLEARED`。必须等 `publish_note`、`read_comments`、
+  `read_inbox` 三项均为 `PASS` 后才可关闭；在此之前 **cloud/M1-Cloud 不得启动**。
+- M0-Cap 当前三能力：`publish_note=NOT_RUN`；`read_comments=FAIL`；
+  `read_inbox=BLOCKED`（inbox page/extract 已通，但 thread 提取仍未闭环）。
 - Redmi Note 12 Turbo（12+256）真实小红书验证：`PARTIAL`（见下表；M0-Cap inbox
   page/extract 已通，thread/publish 仍未完整闭环）
 - 第二台不同型号 Xiaomi/Redmi 真实小红书验证：`NOT_RUN`（无第二机）
