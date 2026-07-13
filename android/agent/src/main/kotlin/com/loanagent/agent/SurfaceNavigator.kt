@@ -29,14 +29,17 @@ object SurfaceNavigator {
 
     fun goInbox(runtime: PlaybookRuntime): NavResult {
         ensureForeground(runtime).let { if (it is NavResult.Failed) return it }
+        // After comments/publish the pager is often mid-swipe; force a home reset first.
+        resetTowardHome(runtime)
+        runtime.sleep(600)
         if (onInboxSurface(runtime)) return NavResult.Ok
         if (clickMessageTab(runtime)) {
-            runtime.sleep(1_000)
+            runtime.sleep(1_200)
             if (onInboxSurface(runtime)) return NavResult.Ok
         }
         resetTowardHome(runtime)
         if (clickMessageTab(runtime)) {
-            runtime.sleep(1_200)
+            runtime.sleep(1_500)
             if (onInboxSurface(runtime)) return NavResult.Ok
         }
         return NavResult.Failed("NAV_TIMEOUT")

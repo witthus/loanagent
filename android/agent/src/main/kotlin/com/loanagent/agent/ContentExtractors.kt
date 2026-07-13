@@ -93,14 +93,16 @@ class ContentExtractors(
         }
 
         for (item in flat) {
-            val indentReply = minLeft != null &&
-                item.leftHint != null &&
-                item.leftHint > minLeft + REPLY_LEFT_DELTA
-            val isReply = item.preferAsReply || indentReply
+            // Author badge marks note-owner comments AND true replies. Only nest the first
+            // owner reply under a non-owner root; further owner comments become new roots.
+            val isReply = item.preferAsReply &&
+                currentRoot != null &&
+                !currentRoot.preferAsReply &&
+                replyBuffer.isEmpty()
             if (currentRoot == null || !isReply) {
                 flushRoot()
                 if (roots.size >= maxRoots.coerceAtLeast(0)) break
-                currentRoot = item.copy(replies = emptyList(), preferAsReply = false)
+                currentRoot = item.copy(replies = emptyList())
             } else {
                 replyBuffer += item.copy(
                     replyToAuthor = item.replyToAuthor ?: currentRoot?.authorSummary,
@@ -385,6 +387,7 @@ class ContentExtractors(
         if (hasSentencePunctuation(value)) return false
         if (value.startsWith("来自笔记")) return false
         if (PROFILE_OR_NAV_TITLE.contains(value)) return false
+        if (value.contains("赞和收藏")) return false
         return entry.node.clickable || looksLikeShortLabel(value)
     }
 
@@ -394,6 +397,10 @@ class ContentExtractors(
         if (value.startsWith("来自笔记")) return false
         if (FOLLOW_FANS_COUNT.matches(value)) return false
         if (value.startsWith("小红书号")) return false
+        if (value.contains("赞和收藏")) return false
+        if (COMMENT_COUNT_LIKE.matches(value)) return false
+        // Note titles often leak into the comments sheet as a11y labels.
+        if ('｜' in value || '|' in value) return false
         return value.length >= 2
     }
 
@@ -490,7 +497,7 @@ class ContentExtractors(
             """^(\d+\s*分钟前|\d+\s*小时前|刚刚|昨天|前天|今天(\s*\d{1,2}:\d{2})?|周[一二三四五六日]|星期[一二三四五六日天])(\s*\d{1,2}:\d{2})?$""",
         )
         val COMMENT_META_LINE = Regex(
-            """^(?:\d+\s*分钟前|\d+\s*小时前|刚刚|昨天|前天|今天\s*\d{1,2}:\d{2})\s*[\u4e00-\u9fffA-Za-z0-9]{0,12}(?:\s*回复)?$""",
+            """^(?:(?:\d+\s*(?:分钟|小时|天)前)|刚刚|昨天|前天|今天|\d{1,2}-\d{1,2})(?:[\s\d:：\u4e00-\u9fff]{0,20})?(?:\s*回复)?$""",
         )
         val GALLERY_HINT = Regex("""图片,第\d+张|双指左划|共\d+张""")
         val DIGITS_ONLY = Regex("""^\d+$""")

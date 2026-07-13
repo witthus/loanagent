@@ -303,7 +303,8 @@ class InboxService:
         return self.task_service.create_and_dispatch(
             account_id=account_id,
             playbook="inbox_sync@1.0",
-            params={"max_items": 20, "max_threads": 8, "open_threads": True},
+            # List first is reliable; opening every thread is flaky on mid-swipe surfaces.
+            params={"max_items": 20, "max_threads": 5, "open_threads": True},
             source="manual",
         )
 
