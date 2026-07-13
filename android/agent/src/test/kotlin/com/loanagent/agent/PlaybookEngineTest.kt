@@ -57,10 +57,14 @@ class PlaybookEngineTest {
     }
 
     @Test
-    fun inboxSyncFailsWhenEmpty() {
+    fun inboxSyncSucceedsWithEmptyThreadListForReconcile() {
         val engine = engineWithDefaults(FakePlaybookRuntime(hint = PageHint.INBOX))
         val result = engine.run(PlaybookCommand(taskId = "in1", playbook = "inbox_sync@1.0"))!!
-        assertEquals("EXTRACT_EMPTY", result.errorCode)
+        assertTrue(result.success)
+        assertEquals("inbox", result.resultPayload?.get("kind"))
+        @Suppress("UNCHECKED_CAST")
+        val threads = result.resultPayload?.get("threads") as List<*>
+        assertTrue(threads.isEmpty())
     }
 
     @Test
@@ -328,6 +332,10 @@ class PlaybookEngineTest {
         override fun extractComments(maxItems: Int) = comments.take(maxItems)
         override fun extractInboxThreads(maxItems: Int) = threads.take(maxItems)
         override fun extractDmMessages(maxItems: Int) = messages.take(maxItems)
+        override fun looksLikeInboxListSurface(): Boolean = hint == PageHint.INBOX
+        override fun looksLikeOpenDmThreadSurface(): Boolean =
+            hint == PageHint.INBOX || messages.isNotEmpty()
+        override fun looksLikeCommentsSurface(): Boolean = hint == PageHint.COMMENTS
         override fun click(selector: String, allowFinal: Boolean, timeoutMs: Long) = clickOk
         override fun clickTextContaining(fragment: String, timeoutMs: Long): Boolean = clickOk
         override fun setText(selector: String, text: String, timeoutMs: Long) = setTextOk

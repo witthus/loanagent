@@ -11,6 +11,9 @@ type Note = {
   account_id: string
   title_summary: string | null
   xhs_hint: string | null
+  like_count?: number | null
+  collect_count?: number | null
+  read_count?: number | null
 }
 type Comment = {
   comment_id: string
@@ -18,6 +21,12 @@ type Comment = {
   author_summary: string
   body_summary: string
   locator_hint: string | null
+  parent_node_id?: string | null
+  root_node_id?: string | null
+  depth?: number
+  posted_at_text?: string | null
+  reply_to_author?: string | null
+  sort_index?: number
 }
 
 const route = useRoute()
@@ -29,7 +38,8 @@ const noteId = ref('')
 const replyDrafts = ref<Record<string, string>>({})
 const message = ref('')
 const error = ref('')
-const syncing = ref(false)
+const syncingNotes = ref(false)
+const syncingComments = ref(false)
 const replyingId = ref<string | null>(null)
 const { status, errorCode, poll } = useTaskPoll()
 
@@ -37,8 +47,19 @@ const filteredNotes = computed(() =>
   accountId.value ? notes.value.filter((n) => n.account_id === accountId.value) : notes.value,
 )
 
+const selectedNote = computed(() =>
+  filteredNotes.value.find((n) => n.note_id === noteId.value) || null,
+)
+
+const orderedComments = computed(() =>
+  [...comments.value].sort((a, b) => (a.sort_index ?? 0) - (b.sort_index ?? 0)),
+)
+
 async function loadNotes() {
-  notes.value = await api<Note[]>('/api/v1/notes')
+  const q = accountId.value
+    ? `/api/v1/notes?account_id=${encodeURIComponent(accountId.value)}`
+    : '/api/v1/notes'
+  notes.value = await api<Note[]>(q)
 }
 
 async function loadComments() {
@@ -49,19 +70,48 @@ async function loadComments() {
   comments.value = await api<Comment[]>(`/api/v1/notes/${noteId.value}/comments`)
 }
 
+async function syncNotes() {
+  if (!accountId.value) return
+  syncingNotes.value = true
+  error.value = ''
+  message.value = ''
+  try {
+    const task = await api<{ task_id: string }>('/api/v1/notes/sync', {
+      method: 'POST',
+      body: JSON.stringify({ account_id: accountId.value }),
+    })
+    message.value = '已提交同步我的笔记，正在等待手机执行…'
+    const final = await poll(task.task_id)
+    if (final?.status === 'succeeded') {
+      message.value = '笔记列表已与手机对账更新'
+      await loadNotes()
+      if (!filteredNotes.value.some((n) => n.note_id === noteId.value)) {
+        noteId.value = filteredNotes.value[0]?.note_id || ''
+      }
+    } else {
+      const human = humanizeError(final?.error_code || errorCode.value)
+      error.value = `${human.title}。${human.nextStep}`
+    }
+  } catch (err) {
+    error.value = err instanceof ApiError ? err.body : '同步笔记失败'
+  } finally {
+    syncingNotes.value = false
+  }
+}
+
 async function syncComments() {
   if (!noteId.value) return
-  syncing.value = true
+  syncingComments.value = true
   error.value = ''
   message.value = ''
   try {
     const task = await api<{ task_id: string }>(`/api/v1/notes/${noteId.value}/sync-comments`, {
       method: 'POST',
     })
-    message.value = '已提交同步，正在等待手机执行…'
+    message.value = '已提交同步评论，正在等待手机执行…'
     const final = await poll(task.task_id)
     if (final?.status === 'succeeded') {
-      message.value = '评论已同步'
+      message.value = '评论已与手机对账更新'
       await loadComments()
     } else {
       const human = humanizeError(final?.error_code || errorCode.value)
@@ -70,7 +120,7 @@ async function syncComments() {
   } catch (err) {
     error.value = err instanceof ApiError ? err.body : '同步失败'
   } finally {
-    syncing.value = false
+    syncingComments.value = false
   }
 }
 
@@ -105,10 +155,15 @@ async function replyComment(commentId: string) {
   }
 }
 
-watch(accountId, () => {
-  const stillValid = filteredNotes.value.some((n) => n.note_id === noteId.value)
-  if (!stillValid && filteredNotes.value[0]) {
-    noteId.value = filteredNotes.value[0].note_id
+watch(accountId, async () => {
+  try {
+    await loadNotes()
+    const stillValid = filteredNotes.value.some((n) => n.note_id === noteId.value)
+    if (!stillValid) {
+      noteId.value = filteredNotes.value[0]?.note_id || ''
+    }
+  } catch {
+    error.value = '加载笔记失败'
   }
 })
 
@@ -121,7 +176,6 @@ watch(noteId, () => {
 onMounted(async () => {
   try {
     accounts.value = await api<Account[]>('/api/v1/accounts?platform=xhs')
-    await loadNotes()
     const qAccount = route.query.account_id as string | undefined
     const qNote = route.query.note_id as string | undefined
     if (qAccount && accounts.value.some((a) => a.account_id === qAccount)) {
@@ -129,6 +183,7 @@ onMounted(async () => {
     } else if (accounts.value[0]) {
       accountId.value = accounts.value[0].account_id
     }
+    await loadNotes()
     if (qNote && notes.value.some((n) => n.note_id === qNote)) {
       noteId.value = qNote
     } else if (filteredNotes.value[0]) {
@@ -153,30 +208,55 @@ onMounted(async () => {
           </option>
         </select>
       </label>
-      <label>
-        已发笔记
-        <select v-model="noteId">
-          <option v-for="n in filteredNotes" :key="n.note_id" :value="n.note_id">
-            {{ n.title_summary || n.note_id }}
-          </option>
-        </select>
-      </label>
-      <button type="button" :disabled="!noteId || syncing" @click="syncComments">
-        {{ syncing ? '同步中…' : '同步最新评论' }}
+      <div class="row align-end">
+        <label class="grow">
+          已发笔记（数据库缓存）
+          <select v-model="noteId" class="control">
+            <option v-if="!filteredNotes.length" value="">暂无笔记，请先同步</option>
+            <option v-for="n in filteredNotes" :key="n.note_id" :value="n.note_id">
+              {{ n.title_summary || n.note_id }}
+            </option>
+          </select>
+        </label>
+        <button
+          type="button"
+          class="secondary control"
+          :disabled="!accountId || syncingNotes"
+          @click="syncNotes"
+        >
+          {{ syncingNotes ? '同步笔记中…' : '同步我的笔记' }}
+        </button>
+      </div>
+      <div v-if="selectedNote" class="stats">
+        <span>点赞 {{ selectedNote.like_count ?? '—' }}</span>
+        <span>收藏 {{ selectedNote.collect_count ?? '—' }}</span>
+        <span v-if="selectedNote.read_count != null">阅读 {{ selectedNote.read_count }}</span>
+      </div>
+      <button type="button" :disabled="!noteId || syncingComments" @click="syncComments">
+        {{ syncingComments ? '同步评论中…' : '同步最新评论' }}
       </button>
+      <p class="hint">默认显示数据库缓存；同步会与手机对账，并保留评论层级与时间。</p>
       <p v-if="status" class="muted">任务状态：{{ status }}</p>
       <p v-if="message" class="ok">{{ message }}</p>
       <p v-if="error" class="error">{{ error }}</p>
     </div>
 
-    <div v-if="comments.length" class="comments">
-      <article v-for="c in comments" :key="c.comment_id" class="card">
+    <div v-if="orderedComments.length" class="comments">
+      <article
+        v-for="c in orderedComments"
+        :key="c.comment_id"
+        class="card"
+        :class="{ reply: (c.depth || 0) > 0 }"
+      >
         <header>
-          <strong>{{ c.author_summary }}</strong>
-          <span v-if="c.locator_hint" class="muted">{{ c.locator_hint }}</span>
+          <div class="who">
+            <strong>{{ c.author_summary }}</strong>
+            <span v-if="c.reply_to_author" class="reply-to">回复 @{{ c.reply_to_author }}</span>
+          </div>
+          <span class="time">{{ c.posted_at_text || '—' }}</span>
         </header>
         <p class="body">{{ c.body_summary }}</p>
-        <form class="reply" @submit.prevent="replyComment(c.comment_id)">
+        <form class="reply-form" @submit.prevent="replyComment(c.comment_id)">
           <textarea
             v-model="replyDrafts[c.comment_id]"
             rows="2"
@@ -189,13 +269,13 @@ onMounted(async () => {
         </form>
       </article>
     </div>
-    <p v-else-if="noteId" class="empty">暂无评论，可点「同步最新评论」从手机拉取。</p>
+    <p v-else-if="noteId" class="empty">暂无评论，可点「同步最新评论」从手机拉取并对账。</p>
   </section>
 </template>
 
 <style scoped>
 .panel {
-  max-width: 560px;
+  max-width: 720px;
   background: #fff;
   border-radius: 12px;
   padding: 22px;
@@ -204,22 +284,37 @@ onMounted(async () => {
   gap: 14px;
   margin-bottom: 20px;
 }
+.row { display: flex; gap: 10px; }
+.align-end { align-items: flex-end; }
+.grow { flex: 1; min-width: 0; }
 label { display: flex; flex-direction: column; gap: 6px; font-weight: 600; }
-select, button, textarea { padding: 10px 12px; border-radius: 8px; font: inherit; }
+.control, select, button, textarea { padding: 10px 12px; border-radius: 8px; font: inherit; box-sizing: border-box; }
+select.control, button.control { min-height: 42px; }
 select, textarea { border: 1px solid #d0d5dd; }
 button { background: #2d6a4f; color: #fff; border: 0; font-weight: 600; cursor: pointer; align-self: flex-start; }
+button.secondary { background: #344054; white-space: nowrap; flex-shrink: 0; }
 button:disabled { opacity: 0.6; cursor: not-allowed; }
-.comments { display: flex; flex-direction: column; gap: 12px; }
+.stats { display: flex; gap: 16px; color: #344054; font-size: 0.95rem; }
+.comments { display: flex; flex-direction: column; gap: 10px; max-width: 720px; }
 .card {
   background: #fff;
   border-radius: 12px;
   padding: 16px 18px;
   border: 1px solid #e5e7eb;
 }
-.card header { display: flex; justify-content: space-between; gap: 12px; }
+.card.reply {
+  margin-left: 28px;
+  border-left: 3px solid #b7c4bc;
+  background: #f8faf9;
+}
+.card header { display: flex; justify-content: space-between; gap: 12px; align-items: baseline; }
+.who { display: flex; flex-wrap: wrap; gap: 8px; align-items: baseline; }
+.reply-to { color: #5c6770; font-size: 0.88rem; font-weight: 500; }
+.time { color: #5c6770; font-size: 0.88rem; white-space: nowrap; }
 .body { margin: 8px 0 12px; color: #1f2329; }
-.reply { display: flex; flex-direction: column; gap: 8px; }
+.reply-form { display: flex; flex-direction: column; gap: 8px; }
 .muted { color: #5c6770; margin: 0; font-size: 0.9rem; }
+.hint { color: #5c6770; margin: 0; font-size: 0.88rem; font-weight: 400; }
 .ok { color: #2d6a4f; margin: 0; }
 .error { color: #b42318; margin: 0; }
 .empty { color: #5c6770; background: #fff; border-radius: 12px; padding: 20px; }

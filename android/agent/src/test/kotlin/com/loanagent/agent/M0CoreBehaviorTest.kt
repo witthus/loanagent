@@ -71,7 +71,7 @@ class M0CoreBehaviorTest {
             "搜索 取消 历史记录" to PageHint.SEARCH,
             "问一问 搜索结果页" to PageHint.SEARCH,
             "发布笔记 相册 拍摄" to PageHint.PUBLISH_ENTRY,
-            "标题 正文 下一步" to PageHint.EDITOR,
+            "添加标题 添加正文 发布笔记" to PageHint.EDITOR,
             "赞 收藏 作者笔记" to PageHint.NOTE_DETAIL,
             "评论 说点什么" to PageHint.COMMENTS,
             "消息 私信 通知" to PageHint.INBOX,
@@ -83,6 +83,38 @@ class M0CoreBehaviorTest {
         cases.forEach { (text, expected) ->
             assertEquals(expected, classifier.classify(listOf(UiNode(text = text))))
         }
+    }
+
+    @Test
+    fun liveMessageHubWithPipeLikeCollectClassifiesAsInbox() {
+        // Accessibility often exposes hub chrome as "赞|收藏" while uiautomator shows "赞和收藏".
+        val nodes = listOf(
+            UiNode(text = "消息"),
+            UiNode(text = "赞|收藏"),
+            UiNode(text = "新增关注"),
+            UiNode(text = "评论和@"),
+            UiNode(text = "静生百慧茶叶馆"),
+            UiNode(text = "首页"),
+            UiNode(contentDescription = "消息"),
+        )
+        assertEquals(PageHint.INBOX, PageClassifier().classify(nodes))
+    }
+
+    @Test
+    fun liveMessageHubWithLikeCollectAndCommentAtClassifiesAsInboxNotNoteDetail() {
+        val nodes = listOf(
+            UiNode(text = "消息"),
+            UiNode(text = "赞和收藏"),
+            UiNode(text = "新增关注"),
+            UiNode(text = "评论和@"),
+            UiNode(text = "静生百慧茶叶馆"),
+            UiNode(text = "20分钟内在线"),
+            UiNode(text = "首页"),
+            UiNode(contentDescription = "消息"),
+            UiNode(contentDescription = "市集"),
+            UiNode(contentDescription = "我"),
+        )
+        assertEquals(PageHint.INBOX, PageClassifier().classify(nodes))
     }
 
     @Test
@@ -157,6 +189,23 @@ class M0CoreBehaviorTest {
             UiNode(text = "你好茶叶不错"),
         )
         assertEquals(PageHint.INBOX, PageClassifier().classify(nodes))
+    }
+
+    @Test
+    fun profileMePageIsNotInboxEvenWithBottomMessageTab() {
+        val nodes = listOf(
+            UiNode(text = "首页"),
+            UiNode(text = "市集"),
+            UiNode(text = "消息"),
+            UiNode(text = "我"),
+            UiNode(text = "编辑主页"),
+            UiNode(text = "小红书号：4122709580"),
+            UiNode(text = "13粉丝"),
+            UiNode(text = "6获赞与收藏"),
+            UiNode(text = "赞和收藏"),
+            UiNode(text = "笔记"),
+        )
+        assertNotEquals(PageHint.INBOX, PageClassifier().classify(nodes))
     }
 
     @Test

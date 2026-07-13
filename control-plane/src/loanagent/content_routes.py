@@ -119,6 +119,38 @@ def list_content(
     return [asdict(item) for item in _content_repository(request).list(platform=platform)]
 
 
+@router.get("/content/{content_id}", dependencies=[Depends(require_ops)])
+def get_content(content_id: str, request: Request) -> dict:
+    try:
+        return asdict(_content_repository(request).get(content_id))
+    except ContentNotFoundError as error:
+        raise _http_error(404, "CONTENT_NOT_FOUND", "Content does not exist.") from error
+
+
+@router.patch("/content/{content_id}", dependencies=[Depends(require_ops)])
+def update_content(content_id: str, payload: ContentCreatePayload, request: Request) -> dict:
+    try:
+        record = _content_repository(request).update(content_id, **payload.model_dump())
+    except ContentNotFoundError as error:
+        raise _http_error(404, "CONTENT_NOT_FOUND", "Content does not exist.") from error
+    except ContentSensitivityError as error:
+        raise _http_error(
+            400,
+            "SENSITIVITY_REJECTED",
+            f"Content rejected by sensitivity scan: {', '.join(error.hits)}",
+        ) from error
+    return asdict(record)
+
+
+@router.delete("/content/{content_id}", dependencies=[Depends(require_ops)])
+def delete_content(content_id: str, request: Request) -> Response:
+    try:
+        _content_repository(request).delete(content_id)
+    except ContentNotFoundError as error:
+        raise _http_error(404, "CONTENT_NOT_FOUND", "Content does not exist.") from error
+    return Response(status_code=204)
+
+
 @router.post("/schedules", dependencies=[Depends(require_ops)])
 def create_schedule(payload: ScheduleCreatePayload, request: Request) -> dict:
     try:

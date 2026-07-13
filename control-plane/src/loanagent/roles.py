@@ -14,17 +14,17 @@ _PUBLISHERS = {AccountRole.PUBLISHER_MAIN, AccountRole.PUBLISHER_MATRIX}
 # playbook name before @version
 _ALLOW: dict[AccountRole, frozenset[str]] = {
     AccountRole.PUBLISHER_MAIN: frozenset({
-        "ensure_app_ready", "publish_note", "read_comments", "post_comment",
+        "ensure_app_ready", "publish_note", "read_comments", "sync_notes", "post_comment",
         "reply_comment", "inbox_sync", "inbox_open_thread", "reply_dm",
         "dismiss_interruptions",
     }),
     AccountRole.PUBLISHER_MATRIX: frozenset({
-        "ensure_app_ready", "publish_note", "read_comments", "post_comment",
+        "ensure_app_ready", "publish_note", "read_comments", "sync_notes", "post_comment",
         "reply_comment", "inbox_sync", "inbox_open_thread", "reply_dm",
         "dismiss_interruptions",
     }),
     AccountRole.ENGAGER: frozenset({
-        "ensure_app_ready", "read_comments", "post_comment",
+        "ensure_app_ready", "read_comments", "sync_notes", "post_comment",
         "inbox_sync", "inbox_open_thread", "reply_dm", "dismiss_interruptions",
     }),
 }

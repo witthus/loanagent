@@ -22,7 +22,8 @@ ENV PATH=/app/.venv/bin:${PATH} \
 RUN groupadd --gid "${APP_GID}" loanagent \
     && useradd --uid "${APP_UID}" --gid "${APP_GID}" --create-home loanagent \
     && python -m venv /app/.venv \
-    && chown -R loanagent:loanagent /app
+    && mkdir -p /app/media /var/lib/loanagent/media \
+    && chown -R loanagent:loanagent /app /var/lib/loanagent
 
 WORKDIR /app
 COPY control-plane/requirements.server.txt /tmp/requirements.server.txt

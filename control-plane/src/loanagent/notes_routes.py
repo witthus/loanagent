@@ -31,6 +31,12 @@ class CommentReplyPayload(BaseModel):
     text: str = Field(min_length=1, max_length=4000)
 
 
+class NotesSyncPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    account_id: str = Field(min_length=1, max_length=128)
+
+
 @router.get("/notes", dependencies=[Depends(require_ops)])
 def list_notes(
     request: Request,
@@ -40,6 +46,15 @@ def list_notes(
         asdict(note)
         for note in _notes_service(request).list_notes(account_id=account_id)
     ]
+
+
+@router.post("/notes/sync", dependencies=[Depends(require_ops)])
+def sync_notes(payload: NotesSyncPayload, request: Request) -> dict:
+    try:
+        task = _notes_service(request).sync_notes(payload.account_id)
+    except Exception as error:
+        raise _map_task_error(error) from error
+    return asdict(task)
 
 
 @router.post("/notes/{note_id}/sync-comments", dependencies=[Depends(require_ops)])

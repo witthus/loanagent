@@ -40,10 +40,15 @@ class PublishedNoteRecord:
     last_synced_at: datetime | None
     created_at: datetime
     updated_at: datetime
+    like_count: int | None = None
+    collect_count: int | None = None
+    read_count: int | None = None
 
 
 @dataclass(frozen=True)
 class NoteCommentRecord:
+    """Legacy flat comment row (compat) or API-facing comment node."""
+
     comment_id: str
     note_id: str
     account_id: str
@@ -52,6 +57,49 @@ class NoteCommentRecord:
     locator_hint: str | None
     source_task_id: str | None
     created_at: datetime
+    parent_node_id: str | None = None
+    root_node_id: str | None = None
+    depth: int = 0
+    posted_at_text: str | None = None
+    reply_to_author: str | None = None
+    sort_index: int = 0
+
+
+@dataclass(frozen=True)
+class NoteCommentNodeRecord:
+    node_id: str
+    note_id: str
+    account_id: str
+    parent_node_id: str | None
+    root_node_id: str
+    depth: int
+    author_summary: str
+    body_summary: str
+    posted_at_text: str | None
+    reply_to_author: str | None
+    sort_index: int
+    locator_hint: str | None
+    source_task_id: str | None
+    synced_at: datetime
+    created_at: datetime
+
+    def as_comment_record(self) -> NoteCommentRecord:
+        return NoteCommentRecord(
+            comment_id=self.node_id,
+            note_id=self.note_id,
+            account_id=self.account_id,
+            author_summary=self.author_summary,
+            body_summary=self.body_summary,
+            locator_hint=self.locator_hint,
+            source_task_id=self.source_task_id,
+            created_at=self.created_at,
+            parent_node_id=self.parent_node_id,
+            root_node_id=self.root_node_id,
+            depth=self.depth,
+            posted_at_text=self.posted_at_text,
+            reply_to_author=self.reply_to_author,
+            sort_index=self.sort_index,
+        )
 
 
 def _truncate(value: str | None, limit: int = SUMMARY_MAX_LEN) -> str | None:
@@ -133,44 +181,69 @@ class NotesService:
         source_task_id: str | None,
         payload: Mapping[str, Any],
     ) -> list[NoteCommentRecord]:
+        """Replace comment tree for a note (supports nested replies in payload)."""
+        return [
+            node.as_comment_record()
+            for node in self.replace_comment_tree_from_payload(
+                account_id=account_id,
+                source_task_id=source_task_id,
+                payload=payload,
+            )
+        ]
+
+    def replace_comment_tree_from_payload(
+        self,
+        *,
+        account_id: str,
+        source_task_id: str | None,
+        payload: Mapping[str, Any],
+    ) -> list[NoteCommentNodeRecord]:
         note = self._resolve_note_for_payload(account_id, payload)
         items = list(payload.get("items") or [])[:COMMENTS_MAX_ITEMS]
-        results: list[NoteCommentRecord] = []
+        results: list[NoteCommentNodeRecord] = []
         with psycopg.connect(self.database_url) as connection:
+            connection.execute(
+                "DELETE FROM note_comment_nodes WHERE note_id = %s",
+                (note.note_id,),
+            )
+            # Keep legacy table in sync for older readers.
+            connection.execute(
+                "DELETE FROM note_comments WHERE note_id = %s",
+                (note.note_id,),
+            )
+            sort_index = 0
             for item in items:
-                author = _truncate(item.get("author_summary") or "") or ""
-                body = _truncate(item.get("body_summary") or "") or ""
-                if not author and not body:
+                root, sort_index = self._insert_comment_node(
+                    connection,
+                    note_id=note.note_id,
+                    account_id=account_id,
+                    source_task_id=source_task_id,
+                    item=item,
+                    parent_node_id=None,
+                    root_node_id=None,
+                    depth=0,
+                    sort_index=sort_index,
+                )
+                if root is None:
                     continue
-                locator = _truncate(item.get("locator_hint"))
-                row = connection.execute(
-                    """
-                    INSERT INTO note_comments (
-                        comment_id, note_id, account_id, author_summary,
-                        body_summary, locator_hint, source_task_id
+                results.append(root)
+                parent_author = root.author_summary
+                for reply in list(item.get("replies") or []):
+                    child, sort_index = self._insert_comment_node(
+                        connection,
+                        note_id=note.note_id,
+                        account_id=account_id,
+                        source_task_id=source_task_id,
+                        item=reply,
+                        parent_node_id=root.node_id,
+                        root_node_id=root.node_id,
+                        depth=1,
+                        sort_index=sort_index,
+                        default_reply_to=parent_author,
                     )
-                    VALUES (%s, %s, %s, %s, %s, %s, %s)
-                    ON CONFLICT (note_id, author_summary, body_summary) DO UPDATE SET
-                        locator_hint = COALESCE(
-                            EXCLUDED.locator_hint, note_comments.locator_hint
-                        ),
-                        source_task_id = COALESCE(
-                            EXCLUDED.source_task_id, note_comments.source_task_id
-                        )
-                    RETURNING comment_id, note_id, account_id, author_summary,
-                        body_summary, locator_hint, source_task_id, created_at
-                    """,
-                    (
-                        str(uuid4()),
-                        note.note_id,
-                        account_id,
-                        author,
-                        body,
-                        locator,
-                        source_task_id,
-                    ),
-                ).fetchone()
-                results.append(_comment_from_row(row))
+                    if child is not None:
+                        results.append(child)
+                # Flat payload without replies still lands as depth-0 only.
             connection.execute(
                 """
                 UPDATE published_notes
@@ -182,13 +255,91 @@ class NotesService:
             )
         return results
 
+    def _insert_comment_node(
+        self,
+        connection: psycopg.Connection,
+        *,
+        note_id: str,
+        account_id: str,
+        source_task_id: str | None,
+        item: Mapping[str, Any],
+        parent_node_id: str | None,
+        root_node_id: str | None,
+        depth: int,
+        sort_index: int,
+        default_reply_to: str | None = None,
+    ) -> tuple[NoteCommentNodeRecord | None, int]:
+        author = _truncate(item.get("author_summary") or "") or ""
+        body = _truncate(item.get("body_summary") or "") or ""
+        if not author and not body:
+            return None, sort_index
+        node_id = str(uuid4())
+        root_id = root_node_id or node_id
+        posted_at = _truncate(item.get("posted_at_text"), 64)
+        reply_to = _truncate(
+            item.get("reply_to_author") or default_reply_to,
+            64,
+        )
+        locator = _truncate(item.get("locator_hint"))
+        row = connection.execute(
+            """
+            INSERT INTO note_comment_nodes (
+                node_id, note_id, account_id, parent_node_id, root_node_id, depth,
+                author_summary, body_summary, posted_at_text, reply_to_author,
+                sort_index, locator_hint, source_task_id, synced_at
+            )
+            VALUES (
+                %s, %s, %s, %s, %s, %s,
+                %s, %s, %s, %s,
+                %s, %s, %s, CURRENT_TIMESTAMP
+            )
+            RETURNING node_id, note_id, account_id, parent_node_id, root_node_id, depth,
+                author_summary, body_summary, posted_at_text, reply_to_author,
+                sort_index, locator_hint, source_task_id, synced_at, created_at
+            """,
+            (
+                node_id,
+                note_id,
+                account_id,
+                parent_node_id,
+                root_id,
+                depth,
+                author,
+                body,
+                posted_at,
+                reply_to if depth > 0 else None,
+                sort_index,
+                locator,
+                source_task_id,
+            ),
+        ).fetchone()
+        connection.execute(
+            """
+            INSERT INTO note_comments (
+                comment_id, note_id, account_id, author_summary,
+                body_summary, locator_hint, source_task_id
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (note_id, author_summary, body_summary) DO UPDATE SET
+                locator_hint = COALESCE(
+                    EXCLUDED.locator_hint, note_comments.locator_hint
+                ),
+                source_task_id = COALESCE(
+                    EXCLUDED.source_task_id, note_comments.source_task_id
+                )
+            """,
+            (node_id, note_id, account_id, author, body, locator, source_task_id),
+        )
+        return _node_from_row(row), sort_index + 1
+
     def list_notes(self, account_id: str | None = None) -> list[PublishedNoteRecord]:
         with psycopg.connect(self.database_url) as connection:
             if account_id is None:
                 rows = connection.execute(
                     """
                     SELECT note_id, account_id, publish_task_id, content_id, title_summary,
-                        xhs_hint, last_synced_at, created_at, updated_at
+                        xhs_hint, last_synced_at, created_at, updated_at,
+                        like_count, collect_count, read_count
                     FROM published_notes
                     ORDER BY updated_at DESC, note_id
                     """
@@ -197,7 +348,8 @@ class NotesService:
                 rows = connection.execute(
                     """
                     SELECT note_id, account_id, publish_task_id, content_id, title_summary,
-                        xhs_hint, last_synced_at, created_at, updated_at
+                        xhs_hint, last_synced_at, created_at, updated_at,
+                        like_count, collect_count, read_count
                     FROM published_notes
                     WHERE account_id = %s
                     ORDER BY updated_at DESC, note_id
@@ -211,7 +363,8 @@ class NotesService:
             row = connection.execute(
                 """
                 SELECT note_id, account_id, publish_task_id, content_id, title_summary,
-                    xhs_hint, last_synced_at, created_at, updated_at
+                    xhs_hint, last_synced_at, created_at, updated_at,
+                    like_count, collect_count, read_count
                 FROM published_notes
                 WHERE note_id = %s
                 """,
@@ -226,6 +379,19 @@ class NotesService:
         with psycopg.connect(self.database_url) as connection:
             rows = connection.execute(
                 """
+                SELECT node_id, note_id, account_id, parent_node_id, root_node_id, depth,
+                    author_summary, body_summary, posted_at_text, reply_to_author,
+                    sort_index, locator_hint, source_task_id, synced_at, created_at
+                FROM note_comment_nodes
+                WHERE note_id = %s
+                ORDER BY sort_index, created_at, node_id
+                """,
+                (note_id,),
+            ).fetchall()
+            if rows:
+                return [_node_from_row(row).as_comment_record() for row in rows]
+            legacy = connection.execute(
+                """
                 SELECT comment_id, note_id, account_id, author_summary, body_summary,
                     locator_hint, source_task_id, created_at
                 FROM note_comments
@@ -234,11 +400,23 @@ class NotesService:
                 """,
                 (note_id,),
             ).fetchall()
-        return [_comment_from_row(row) for row in rows]
+        return [_comment_from_row(row) for row in legacy]
 
     def get_comment(self, comment_id: str) -> NoteCommentRecord:
         with psycopg.connect(self.database_url) as connection:
             row = connection.execute(
+                """
+                SELECT node_id, note_id, account_id, parent_node_id, root_node_id, depth,
+                    author_summary, body_summary, posted_at_text, reply_to_author,
+                    sort_index, locator_hint, source_task_id, synced_at, created_at
+                FROM note_comment_nodes
+                WHERE node_id = %s
+                """,
+                (comment_id,),
+            ).fetchone()
+            if row is not None:
+                return _node_from_row(row).as_comment_record()
+            legacy = connection.execute(
                 """
                 SELECT comment_id, note_id, account_id, author_summary, body_summary,
                     locator_hint, source_task_id, created_at
@@ -247,9 +425,122 @@ class NotesService:
                 """,
                 (comment_id,),
             ).fetchone()
-        if row is None:
+        if legacy is None:
             raise CommentNotFoundError(comment_id)
-        return _comment_from_row(row)
+        return _comment_from_row(legacy)
+
+    def sync_notes(self, account_id: str) -> TaskRecord:
+        return self.task_service.create_and_dispatch(
+            account_id=account_id,
+            playbook="sync_notes@1.0",
+            params={"max_items": 40},
+            source="manual",
+        )
+
+    def replace_notes_from_payload(
+        self,
+        *,
+        account_id: str,
+        payload: Mapping[str, Any],
+    ) -> list[PublishedNoteRecord]:
+        """Replace account note cache with device-synced titles (reconcile deletes)."""
+        items = list(payload.get("items") or [])
+        results: list[PublishedNoteRecord] = []
+        with psycopg.connect(self.database_url) as connection:
+            keep_ids: list[str] = []
+            for item in items:
+                title = _truncate(item.get("title_summary") or "")
+                if not title:
+                    continue
+                like_count = _optional_int(item.get("like_count"))
+                collect_count = _optional_int(item.get("collect_count"))
+                read_count = _optional_int(item.get("read_count"))
+                locator = _truncate(item.get("locator_hint"))
+                existing = connection.execute(
+                    """
+                    SELECT note_id FROM published_notes
+                    WHERE account_id = %s AND title_summary = %s
+                    ORDER BY updated_at DESC
+                    LIMIT 1
+                    """,
+                    (account_id, title),
+                ).fetchone()
+                if existing is not None:
+                    note_id = existing[0]
+                    row = connection.execute(
+                        """
+                        UPDATE published_notes
+                        SET like_count = COALESCE(%s, like_count),
+                            collect_count = COALESCE(%s, collect_count),
+                            read_count = COALESCE(%s, read_count),
+                            xhs_hint = COALESCE(%s, xhs_hint),
+                            last_synced_at = CURRENT_TIMESTAMP,
+                            updated_at = CURRENT_TIMESTAMP
+                        WHERE note_id = %s
+                        RETURNING note_id, account_id, publish_task_id, content_id, title_summary,
+                            xhs_hint, last_synced_at, created_at, updated_at,
+                            like_count, collect_count, read_count
+                        """,
+                        (like_count, collect_count, read_count, locator, note_id),
+                    ).fetchone()
+                else:
+                    note_id = str(uuid4())
+                    row = connection.execute(
+                        """
+                        INSERT INTO published_notes (
+                            note_id, account_id, title_summary, xhs_hint,
+                            like_count, collect_count, read_count, last_synced_at
+                        )
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
+                        RETURNING note_id, account_id, publish_task_id, content_id, title_summary,
+                            xhs_hint, last_synced_at, created_at, updated_at,
+                            like_count, collect_count, read_count
+                        """,
+                        (
+                            note_id,
+                            account_id,
+                            title,
+                            locator,
+                            like_count,
+                            collect_count,
+                            read_count,
+                        ),
+                    ).fetchone()
+                keep_ids.append(row[0])
+                results.append(_note_from_row(row))
+            if keep_ids:
+                connection.execute(
+                    """
+                    DELETE FROM note_comments
+                    WHERE note_id IN (
+                        SELECT note_id FROM published_notes
+                        WHERE account_id = %s AND note_id <> ALL(%s)
+                    )
+                    """,
+                    (account_id, keep_ids),
+                )
+                connection.execute(
+                    """
+                    DELETE FROM published_notes
+                    WHERE account_id = %s AND note_id <> ALL(%s)
+                    """,
+                    (account_id, keep_ids),
+                )
+            else:
+                connection.execute(
+                    """
+                    DELETE FROM note_comments
+                    WHERE note_id IN (
+                        SELECT note_id FROM published_notes WHERE account_id = %s
+                    )
+                    """,
+                    (account_id,),
+                )
+                connection.execute(
+                    "DELETE FROM published_notes WHERE account_id = %s",
+                    (account_id,),
+                )
+        return results
 
     def sync_comments(self, note_id: str) -> TaskRecord:
         note = self.get_note(note_id)
@@ -375,6 +666,15 @@ class NotesService:
         return _note_from_row(row)
 
 
+def _optional_int(value: Any) -> int | None:
+    if value is None or value == "":
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def _note_from_row(row: tuple) -> PublishedNoteRecord:
     return PublishedNoteRecord(
         note_id=row[0],
@@ -386,6 +686,9 @@ def _note_from_row(row: tuple) -> PublishedNoteRecord:
         last_synced_at=row[6],
         created_at=row[7],
         updated_at=row[8],
+        like_count=row[9] if len(row) > 9 else None,
+        collect_count=row[10] if len(row) > 10 else None,
+        read_count=row[11] if len(row) > 11 else None,
     )
 
 
@@ -399,4 +702,24 @@ def _comment_from_row(row: tuple) -> NoteCommentRecord:
         locator_hint=row[5],
         source_task_id=row[6],
         created_at=row[7],
+    )
+
+
+def _node_from_row(row: tuple) -> NoteCommentNodeRecord:
+    return NoteCommentNodeRecord(
+        node_id=row[0],
+        note_id=row[1],
+        account_id=row[2],
+        parent_node_id=row[3],
+        root_node_id=row[4],
+        depth=int(row[5] or 0),
+        author_summary=row[6],
+        body_summary=row[7],
+        posted_at_text=row[8],
+        reply_to_author=row[9],
+        sort_index=int(row[10] or 0),
+        locator_hint=row[11],
+        source_task_id=row[12],
+        synced_at=row[13],
+        created_at=row[14],
     )

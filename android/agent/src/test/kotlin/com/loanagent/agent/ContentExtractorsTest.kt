@@ -130,14 +130,14 @@ class ContentExtractorsTest {
             UiNode(text = "让大家听到你的声音"),
         )
         val items = extractor.extractComments(nodes, maxItems = 10)
-        assertEquals(2, items.size)
+        assertEquals(1, items.size)
         assertEquals("静生百慧茶叶馆", items[0].authorSummary)
         assertEquals("这个茶叶多钱？M0CAP-193716", items[0].bodySummary)
-        assertEquals("逾期不候", items[1].authorSummary)
-        assertTrue(items[1].bodySummary.contains("感谢首评"))
-        assertTrue(items.none { it.bodySummary in setOf("你的好友", "首评", "已到底", "公开可见", "作者") })
-        assertTrue(items.none { it.authorSummary.contains("分钟前") })
-        assertTrue(items.none { it.bodySummary.startsWith("点赞") })
+        assertEquals("8分钟前 湖北", items[0].postedAtText)
+        assertEquals(1, items[0].replies.size)
+        assertEquals("逾期不候", items[0].replies[0].authorSummary)
+        assertTrue(items[0].replies[0].bodySummary.contains("感谢首评"))
+        assertEquals("静生百慧茶叶馆", items[0].replies[0].replyToAuthor)
     }
 
     @Test
@@ -191,5 +191,196 @@ class ContentExtractorsTest {
         assertEquals("", threads[0].previewSummary)
         assertEquals("小红书用户B", threads[1].titleSummary)
         assertEquals("", threads[1].previewSummary)
+    }
+
+    @Test
+    fun ignoresAccessibilityContentDescriptionsThatAreNotVisibleCommentText() {
+        // Live false positives from profile / note cards when contentDescription leaks in.
+        val nodes = listOf(
+            UiNode(contentDescription = "编辑主页", clickable = true),
+            UiNode(contentDescription = "扫一扫"),
+            UiNode(contentDescription = "赞和收藏按钮", clickable = true),
+            UiNode(contentDescription = "头像,逾期不候", clickable = true),
+            UiNode(
+                contentDescription = "笔记,曦瓜大红袍｜岩茶品鉴手记,来自逾期不候,2赞，40阅读",
+                clickable = true,
+            ),
+            UiNode(text = "静生百慧茶叶馆", clickable = true),
+            UiNode(text = "这个茶叶多钱？"),
+            UiNode(text = "13", clickable = true),
+            UiNode(text = "粉丝"),
+            UiNode(contentDescription = "[doge]", clickable = true),
+            UiNode(contentDescription = "来自笔记·这是不是假期想溜出去玩的你！"),
+        )
+        val items = extractor.extractComments(nodes, maxItems = 10)
+        assertEquals(1, items.size)
+        assertEquals("静生百慧茶叶馆", items[0].authorSummary)
+        assertEquals("这个茶叶多钱？", items[0].bodySummary)
+    }
+
+    @Test
+    fun ignoresProfileAndBottomNavNoiseInInboxThreads() {
+        val nodes = listOf(
+            UiNode(text = "首页", clickable = true),
+            UiNode(text = "市集", clickable = true),
+            UiNode(text = "消息", clickable = true),
+            UiNode(text = "我", clickable = true),
+            UiNode(contentDescription = "6关注", clickable = true),
+            UiNode(contentDescription = "13粉丝", clickable = true),
+            UiNode(contentDescription = "赞和收藏按钮", clickable = true),
+            UiNode(contentDescription = "评论和@按钮", clickable = true),
+            UiNode(text = "编辑主页", clickable = true),
+            UiNode(text = "小红书号：4122709580", clickable = true),
+            UiNode(text = "静生百慧茶叶馆", clickable = true),
+            UiNode(text = "云测私信请忽略"),
+            UiNode(text = "陌生人消息", clickable = true),
+            UiNode(text = "系统通知", clickable = true),
+        )
+        val threads = extractor.extractInboxThreads(nodes, maxItems = 10)
+        assertEquals(1, threads.size)
+        assertEquals("静生百慧茶叶馆", threads[0].titleSummary)
+        assertEquals("云测私信请忽略", threads[0].previewSummary)
+    }
+
+    @Test
+    fun ignoresCompositeMessageHubAccessibilityLabelsAsInboxTitles() {
+        val nodes = listOf(
+            UiNode(
+                contentDescription = "静生百慧茶叶馆，，，20分钟内在线，11:59",
+                clickable = true,
+            ),
+            UiNode(text = "静生百慧茶叶馆"),
+            UiNode(text = "真实用户甲", clickable = true),
+            UiNode(text = "你好想咨询一下"),
+        )
+        val threads = extractor.extractInboxThreads(nodes, maxItems = 10)
+        assertEquals(1, threads.size)
+        assertEquals("真实用户甲", threads[0].titleSummary)
+        assertEquals("你好想咨询一下", threads[0].previewSummary)
+    }
+
+    @Test
+    fun ignoresCompositeOnlineStatusTextAsInboxTitles() {
+        // Same noise sometimes appears as visible text, not only contentDescription.
+        val nodes = listOf(
+            UiNode(text = "静生百慧茶叶馆，，，20分钟内在线，11:59", clickable = true),
+            UiNode(text = "静生百慧茶叶馆"),
+            UiNode(text = "男，", clickable = true),
+            UiNode(text = "小组件浏览记录"),
+            UiNode(text = "IP：湖北", clickable = true),
+            UiNode(text = "真实用户乙", clickable = true),
+            UiNode(text = "私信预览内容"),
+        )
+        val threads = extractor.extractInboxThreads(nodes, maxItems = 10)
+        assertEquals(1, threads.size)
+        assertEquals("真实用户乙", threads[0].titleSummary)
+        assertEquals("私信预览内容", threads[0].previewSummary)
+    }
+
+    @Test
+    fun ignoresProfileChromeWhenExtractingDmMessages() {
+        val nodes = listOf(
+            UiNode(text = "编辑主页"),
+            UiNode(text = "扫一扫"),
+            UiNode(text = "粉丝"),
+            UiNode(text = "首页"),
+            UiNode(text = "市集"),
+            UiNode(text = "对方"),
+            UiNode(text = "你好茶叶不错"),
+            UiNode(text = "我"),
+            UiNode(text = "谢谢认可，这泡岩韵不错。"),
+            UiNode(text = "发消息…"),
+        )
+        val messages = extractor.extractDmMessages(nodes, maxItems = 20)
+        assertEquals(2, messages.size)
+        assertEquals("对方", messages[0].senderSummary)
+        assertEquals("你好茶叶不错", messages[0].bodySummary)
+        assertTrue(messages.none { it.bodySummary in setOf("编辑主页", "扫一扫", "粉丝", "首页", "市集") })
+        assertTrue(messages.none { it.senderSummary in setOf("首页", "市集", "粉丝") })
+    }
+
+    @Test
+    fun inboxListSurfaceRequiresMessageHubChromeNotProfile() {
+        val profile = listOf(
+            UiNode(text = "编辑主页"),
+            UiNode(text = "小红书号：1"),
+            UiNode(text = "消息"),
+            UiNode(text = "赞和收藏"),
+        )
+        val inbox = listOf(
+            UiNode(text = "消息"),
+            UiNode(text = "赞和收藏"),
+            UiNode(text = "陌生人消息"),
+            UiNode(text = "系统通知"),
+            UiNode(text = "用户甲", clickable = true),
+            UiNode(text = "你好"),
+        )
+        assertFalse(extractor.looksLikeInboxListSurface(profile))
+        assertTrue(extractor.looksLikeInboxListSurface(inbox))
+    }
+
+    @Test
+    fun skipsInterestRailChromeAndProfileBleedOutsideInboxBand() {
+        val nodes = listOf(
+            UiNode(text = "消息"),
+            UiNode(text = "赞和收藏"),
+            UiNode(text = "陌生人消息", clickable = true, bounds = UiBounds(0, 100, 200, 180)),
+            UiNode(text = "系统通知", clickable = true, bounds = UiBounds(200, 100, 400, 180)),
+            // Interest chrome inside the list band must not become a thread.
+            UiNode(text = "近期互动热门", clickable = true, bounds = UiBounds(0, 220, 400, 280)),
+            // Profile bleed / interest people below the bottom tab band.
+            UiNode(text = "吃颗vccc", clickable = true, bounds = UiBounds(0, 2150, 200, 2200)),
+            UiNode(text = "维维桨板", clickable = true, bounds = UiBounds(200, 2150, 400, 2200)),
+            UiNode(text = "真实客户甲", clickable = true, bounds = UiBounds(0, 400, 400, 460)),
+            UiNode(text = "你好想咨询茶叶", bounds = UiBounds(0, 470, 400, 520)),
+            UiNode(text = "首页", clickable = true, bounds = UiBounds(0, 2200, 200, 2300)),
+            UiNode(text = "消息", clickable = true, bounds = UiBounds(200, 2200, 400, 2300)),
+        )
+        val threads = extractor.extractInboxThreads(nodes, maxItems = 10)
+        assertEquals(1, threads.size)
+        assertEquals("真实客户甲", threads[0].titleSummary)
+        assertEquals("你好想咨询茶叶", threads[0].previewSummary)
+        assertTrue(threads.none { it.titleSummary.contains("近期互动") })
+        assertTrue(threads.none { it.titleSummary in setOf("吃颗vccc", "维维桨板") })
+    }
+
+    @Test
+    fun extractsProfileNotesWithLikeCollectAndReadCounts() {
+        val nodes = listOf(
+            UiNode(text = "编辑主页"),
+            UiNode(
+                contentDescription = "笔记,曦瓜大红袍｜岩茶品鉴手记,来自逾期不候,2赞，1收藏，41阅读",
+                clickable = true,
+                bounds = UiBounds(40, 500, 500, 900),
+            ),
+            UiNode(
+                contentDescription = "笔记,春日茶会分享,来自逾期不候,8赞，3收藏",
+                clickable = true,
+                bounds = UiBounds(520, 500, 980, 900),
+            ),
+        )
+        val notes = extractor.extractProfileNotes(nodes, maxItems = 10)
+        assertEquals(2, notes.size)
+        assertEquals("曦瓜大红袍｜岩茶品鉴手记", notes[0].titleSummary)
+        assertEquals(2, notes[0].likeCount)
+        assertEquals(1, notes[0].collectCount)
+        assertEquals(41, notes[0].readCount)
+        assertEquals("春日茶会分享", notes[1].titleSummary)
+        assertEquals(8, notes[1].likeCount)
+        assertEquals(3, notes[1].collectCount)
+    }
+
+    @Test
+    fun extractsInboxThreadWhenTitleTextViewIsNotClickable() {
+        val nodes = listOf(
+            UiNode(text = "消息"),
+            UiNode(text = "赞和收藏"),
+            UiNode(text = "静生百慧茶叶馆", clickable = false),
+            UiNode(text = "11:59", clickable = false),
+            UiNode(text = "20分钟内在线", clickable = false),
+        )
+        val threads = extractor.extractInboxThreads(nodes, maxItems = 5)
+        assertEquals(1, threads.size)
+        assertEquals("静生百慧茶叶馆", threads[0].titleSummary)
     }
 }

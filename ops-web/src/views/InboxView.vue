@@ -19,6 +19,7 @@ const accountId = ref('')
 const message = ref('')
 const error = ref('')
 const syncing = ref(false)
+const markingId = ref<string | null>(null)
 const { status, errorCode, poll } = useTaskPoll()
 
 async function loadThreads() {
@@ -27,6 +28,23 @@ async function loadThreads() {
     return
   }
   threads.value = await api<Thread[]>(`/api/v1/inbox/threads?account_id=${encodeURIComponent(accountId.value)}`)
+}
+
+async function markAsLead(threadId: string) {
+  markingId.value = threadId
+  error.value = ''
+  message.value = ''
+  try {
+    await api('/api/v1/inbox/leads', {
+      method: 'POST',
+      body: JSON.stringify({ thread_id: threadId, status: 'new' }),
+    })
+    message.value = '已标记为线索，可在「线索」页跟进'
+  } catch (err) {
+    error.value = err instanceof ApiError ? err.body : '标记线索失败'
+  } finally {
+    markingId.value = null
+  }
 }
 
 async function syncInbox() {
@@ -39,10 +57,10 @@ async function syncInbox() {
       method: 'POST',
       body: JSON.stringify({ account_id: accountId.value }),
     })
-    message.value = '已提交同步，正在等待手机执行…'
+    message.value = '已提交对账同步，正在等待手机执行…'
     const final = await poll(task.task_id)
     if (final?.status === 'succeeded') {
-      message.value = '私信已同步'
+      message.value = '私信已与手机对账更新'
       await loadThreads()
     } else {
       const human = humanizeError(final?.error_code || errorCode.value)
@@ -89,8 +107,9 @@ onMounted(async () => {
         </select>
       </label>
       <button type="button" :disabled="!accountId || syncing" @click="syncInbox">
-        {{ syncing ? '同步中…' : '同步私信' }}
+        {{ syncing ? '对账同步中…' : '同步最新私信' }}
       </button>
+      <p class="hint">默认显示数据库缓存；同步会与手机对账，设备上已删除的会话会从缓存移除。</p>
       <p v-if="status" class="muted">任务状态：{{ status }}</p>
       <p v-if="message" class="ok">{{ message }}</p>
       <p v-if="error" class="error">{{ error }}</p>
@@ -99,29 +118,37 @@ onMounted(async () => {
     <table v-if="threads.length">
       <thead>
         <tr>
-          <th>会话</th>
-          <th>预览</th>
-          <th>未读</th>
-          <th></th>
+          <th style="width: 18%">会话</th>
+          <th>最近对话预览</th>
+          <th style="width: 8%">未读</th>
+          <th style="width: 18%"></th>
         </tr>
       </thead>
       <tbody>
         <tr v-for="t in threads" :key="t.thread_id">
-          <td>{{ t.title_summary }}</td>
-          <td>{{ t.preview_summary || '—' }}</td>
+          <td class="title">{{ t.title_summary }}</td>
+          <td class="preview">{{ t.preview_summary || '（暂无正文，可点同步最新私信拉取）' }}</td>
           <td>{{ t.unread ? '是' : '否' }}</td>
-          <td>
+          <td class="row-actions">
             <router-link
               class="link"
               :to="{ path: `/inbox/${t.thread_id}`, query: { account_id: accountId } }"
             >
-              查看
+              查看并回复
             </router-link>
+            <button
+              type="button"
+              class="secondary"
+              :disabled="markingId === t.thread_id"
+              @click="markAsLead(t.thread_id)"
+            >
+              标为线索
+            </button>
           </td>
         </tr>
       </tbody>
     </table>
-    <p v-else class="empty">暂无私信会话，可点「同步私信」从手机拉取。</p>
+    <p v-else class="empty">暂无私信会话（数据库缓存）。可点「同步最新私信」从手机拉取并对账。</p>
   </section>
 </template>
 
@@ -140,10 +167,28 @@ label { display: flex; flex-direction: column; gap: 6px; font-weight: 600; }
 select, button { padding: 10px 12px; border-radius: 8px; font: inherit; }
 button { background: #2d6a4f; color: #fff; border: 0; font-weight: 600; cursor: pointer; align-self: flex-start; }
 button:disabled { opacity: 0.6; cursor: not-allowed; }
+button.secondary {
+  background: #fff;
+  color: #2d6a4f;
+  border: 1px solid #2d6a4f;
+  padding: 6px 10px;
+  font-size: 0.85rem;
+  align-self: auto;
+}
+.row-actions { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
 table { width: 100%; border-collapse: collapse; background: #fff; border-radius: 12px; overflow: hidden; }
-th, td { text-align: left; padding: 12px 14px; border-bottom: 1px solid #eee; }
+th, td { text-align: left; padding: 12px 14px; border-bottom: 1px solid #eee; vertical-align: top; }
 th { background: #f3f4f6; }
+.title { font-weight: 600; white-space: nowrap; }
+.preview {
+  color: #344054;
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: 1.45;
+  max-width: 520px;
+}
 .link { color: #2d6a4f; font-weight: 600; text-decoration: none; }
+.hint { color: #5c6770; margin: 0; font-size: 0.88rem; font-weight: 400; }
 .muted { color: #5c6770; margin: 0; }
 .ok { color: #2d6a4f; margin: 0; }
 .error { color: #b42318; margin: 0; }

@@ -313,7 +313,7 @@ def test_device_get_and_patch_routes() -> None:
         patched = client.patch(
             f"/api/v1/devices/{device_id}",
             headers=ops_headers(),
-            json={"manufacturer": "Xiaomi", "model": "Turbo"},
+            json={"manufacturer": "Xiaomi", "model": "Turbo", "display_name": "红米主号机"},
         )
         missing = client.get("/api/v1/devices/does-not-exist", headers=ops_headers())
     assert got.status_code == 200
@@ -322,4 +322,5 @@ def test_device_get_and_patch_routes() -> None:
     assert patched.status_code == 200
     assert patched.json()["manufacturer"] == "Xiaomi"
     assert patched.json()["model"] == "Turbo"
+    assert patched.json()["display_name"] == "红米主号机"
     assert missing.status_code == 404

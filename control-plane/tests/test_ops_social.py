@@ -335,3 +335,132 @@ def test_publish_event_creates_published_notes() -> None:
     assert len(matching) == 1
     assert matching[0]["title_summary"] == "春日茶会"
     assert matching[0]["xhs_hint"] == "xhs-ref-9"
+
+
+def test_sync_notes_dispatches_and_reconciles_deletes() -> None:
+    device_id, account_id = create_bound_account()
+    mqtt_bus = RecordingMqttBus()
+    task_service = TaskService(DATABASE_URL, mqtt_bus)
+    notes = NotesService(DATABASE_URL, task_service)
+    keep = notes._insert_note(
+        note_id=unique_id("note"),
+        account_id=account_id,
+        title_summary="保留笔记",
+        xhs_hint=None,
+    )
+    stale = notes._insert_note(
+        note_id=unique_id("note"),
+        account_id=account_id,
+        title_summary="已删笔记",
+        xhs_hint=None,
+    )
+
+    with TestClient(app) as client:
+        wire_services(client, mqtt_bus)
+        sync = client.post(
+            "/api/v1/notes/sync",
+            headers=ops_headers(),
+            json={"account_id": account_id},
+        )
+        assert sync.status_code == 200
+        assert sync.json()["playbook"] == "sync_notes@1.0"
+        task_id = sync.json()["task_id"]
+        event = client.post(
+            f"/api/v1/devices/{device_id}/events",
+            headers=ops_headers(),
+            json={
+                "task_id": task_id,
+                "status": "succeeded",
+                "result_payload": {
+                    "kind": "notes",
+                    "items": [
+                        {
+                            "title_summary": "保留笔记",
+                            "like_count": 5,
+                            "collect_count": 2,
+                            "read_count": 40,
+                        },
+                        {
+                            "title_summary": "新同步笔记",
+                            "like_count": 1,
+                        },
+                    ],
+                },
+            },
+        )
+        listed = client.get(
+            "/api/v1/notes",
+            headers=ops_headers(),
+            params={"account_id": account_id},
+        )
+
+    assert event.status_code == 200
+    assert listed.status_code == 200
+    titles = {row["title_summary"] for row in listed.json()}
+    assert titles == {"保留笔记", "新同步笔记"}
+    assert stale.note_id not in {row["note_id"] for row in listed.json()}
+    kept = next(row for row in listed.json() if row["note_id"] == keep.note_id)
+    assert kept["like_count"] == 5
+    assert kept["collect_count"] == 2
+    assert any(
+        topic == f"devices/{device_id}/commands"
+        and payload["playbook"] == "sync_notes@1.0"
+        for topic, payload in mqtt_bus.published
+    )
+
+
+def test_comment_sync_replaces_stale_comments() -> None:
+    _, account_id = create_bound_account()
+    mqtt_bus = RecordingMqttBus()
+    notes = NotesService(DATABASE_URL, TaskService(DATABASE_URL, mqtt_bus))
+    note = notes._insert_note(
+        note_id=unique_id("note"),
+        account_id=account_id,
+        title_summary="demo",
+        xhs_hint="hint",
+    )
+    notes.upsert_comments_from_payload(
+        account_id=account_id,
+        source_task_id=None,
+        payload={
+            "note_id": note.note_id,
+            "items": [
+                {"author_summary": "旧粉", "body_summary": "旧评论"},
+                {"author_summary": "留粉", "body_summary": "还在"},
+            ],
+        },
+    )
+    notes.upsert_comments_from_payload(
+        account_id=account_id,
+        source_task_id=None,
+        payload={
+            "note_id": note.note_id,
+            "items": [
+                {
+                    "author_summary": "留粉",
+                    "body_summary": "还在",
+                    "posted_at_text": "昨天 01:10",
+                    "replies": [
+                        {
+                            "author_summary": "店主",
+                            "body_summary": "谢谢",
+                            "posted_at_text": "昨天 01:12",
+                            "reply_to_author": "留粉",
+                        }
+                    ],
+                },
+                {
+                    "author_summary": "新粉",
+                    "body_summary": "新评论",
+                    "posted_at_text": "昨天 01:17",
+                },
+            ],
+        },
+    )
+    listed = notes.list_comments(note.note_id)
+    bodies = {(c.author_summary, c.body_summary, c.depth) for c in listed}
+    assert bodies == {("留粉", "还在", 0), ("店主", "谢谢", 1), ("新粉", "新评论", 0)}
+    reply = next(c for c in listed if c.author_summary == "店主")
+    assert reply.reply_to_author == "留粉"
+    assert reply.posted_at_text == "昨天 01:12"
+    assert reply.parent_node_id is not None

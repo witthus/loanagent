@@ -22,7 +22,11 @@ class AccessibilityPlaybookRuntime(
 
     override fun launchXhs(): Boolean {
         val launch = context.packageManager.getLaunchIntentForPackage("com.xingin.xhs") ?: return false
-        launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        launch.addFlags(
+            Intent.FLAG_ACTIVITY_NEW_TASK or
+                Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                Intent.FLAG_ACTIVITY_SINGLE_TOP,
+        )
         return try {
             context.startActivity(launch)
             true
@@ -64,6 +68,29 @@ class AccessibilityPlaybookRuntime(
         val snapshot = observe() ?: return emptyList()
         return extractor.extractDmMessages(snapshot.nodes, maxItems)
     }
+
+    override fun extractProfileNotes(maxItems: Int): List<ExtractedProfileNote> {
+        val snapshot = observe() ?: return emptyList()
+        return extractor.extractProfileNotes(snapshot.nodes, maxItems)
+    }
+
+    override fun looksLikeInboxListSurface(): Boolean {
+        val snapshot = observe() ?: return false
+        return extractor.looksLikeInboxListSurface(snapshot.nodes)
+    }
+
+    override fun looksLikeOpenDmThreadSurface(): Boolean {
+        val snapshot = observe() ?: return false
+        return extractor.looksLikeOpenDmThreadSurface(snapshot.nodes)
+    }
+
+    override fun looksLikeCommentsSurface(): Boolean {
+        val snapshot = observe() ?: return false
+        return extractor.looksLikeCommentsSurface(snapshot.nodes)
+    }
+
+    override fun looksLikeProfileSurface(): Boolean =
+        SurfaceNavigator.looksLikeProfile(this)
 
     override fun click(selector: String, allowFinal: Boolean, timeoutMs: Long): Boolean {
         val service = M0AccessibilityService.instance ?: return false

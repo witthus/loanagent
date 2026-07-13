@@ -112,6 +112,65 @@ class ContentRepository:
             raise ContentNotFoundError(content_id)
         return _content_from_row(row)
 
+    def update(
+        self,
+        content_id: str,
+        *,
+        title: str,
+        body: str,
+        media_ids: list[str] | None = None,
+        geo_tags: list[Any] | dict[str, Any] | None = None,
+        platform: str | None = None,
+    ) -> ContentRecord:
+        self.get(content_id)
+        media_ids = list(media_ids or [])
+        platform_value = normalize_platform(platform)
+        hits = scan_text(title, body)
+        if hits:
+            raise ContentSensitivityError(hits)
+        with psycopg.connect(self.database_url) as connection:
+            row = connection.execute(
+                """
+                UPDATE content_assets
+                SET title = %s,
+                    body = %s,
+                    media_ids = %s,
+                    geo_tags = %s,
+                    sensitivity_status = 'clean',
+                    sensitivity_hits = %s,
+                    platform = %s,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE content_id = %s
+                RETURNING content_id, title, body, media_ids, geo_tags,
+                    sensitivity_status, sensitivity_hits, platform, created_at, updated_at
+                """,
+                (
+                    title,
+                    body,
+                    Jsonb(media_ids),
+                    Jsonb(geo_tags) if geo_tags is not None else None,
+                    Jsonb([]),
+                    platform_value,
+                    content_id,
+                ),
+            ).fetchone()
+        if row is None:
+            raise ContentNotFoundError(content_id)
+        return _content_from_row(row)
+
+    def delete(self, content_id: str) -> None:
+        with psycopg.connect(self.database_url) as connection:
+            row = connection.execute(
+                """
+                DELETE FROM content_assets
+                WHERE content_id = %s
+                RETURNING content_id
+                """,
+                (content_id,),
+            ).fetchone()
+        if row is None:
+            raise ContentNotFoundError(content_id)
+
 
 def _content_from_row(row: tuple) -> ContentRecord:
     return ContentRecord(

@@ -29,18 +29,42 @@ object SurfaceNavigator {
 
     fun goInbox(runtime: PlaybookRuntime): NavResult {
         ensureForeground(runtime).let { if (it is NavResult.Failed) return it }
-        if (runtime.currentPageHint() == PageHint.INBOX) return NavResult.Ok
+        if (onInboxSurface(runtime)) return NavResult.Ok
         if (clickMessageTab(runtime)) {
             runtime.sleep(1_000)
-            if (runtime.currentPageHint() == PageHint.INBOX) return NavResult.Ok
+            if (onInboxSurface(runtime)) return NavResult.Ok
         }
         resetTowardHome(runtime)
         if (clickMessageTab(runtime)) {
             runtime.sleep(1_200)
-            if (runtime.currentPageHint() == PageHint.INBOX) return NavResult.Ok
+            if (onInboxSurface(runtime)) return NavResult.Ok
         }
         return NavResult.Failed("NAV_TIMEOUT")
     }
+
+    fun goProfile(runtime: PlaybookRuntime): NavResult {
+        ensureForeground(runtime).let { if (it is NavResult.Failed) return it }
+        if (looksLikeProfile(runtime)) {
+            ensureNotesTab(runtime)
+            return NavResult.Ok
+        }
+        if (openProfile(runtime)) {
+            ensureNotesTab(runtime)
+            return NavResult.Ok
+        }
+        return NavResult.Failed("NAV_TIMEOUT")
+    }
+
+    private fun ensureNotesTab(runtime: PlaybookRuntime) {
+        // Profile may open on 收藏/赞过; prefer 笔记 grid for sync.
+        runtime.click("text=笔记", allowFinal = false, timeoutMs = 3_000) ||
+            runtime.click("contentDescription=笔记", allowFinal = false, timeoutMs = 2_000) ||
+            runtime.click("contentDescription=已选定笔记", allowFinal = false, timeoutMs = 2_000)
+        runtime.sleep(800)
+    }
+
+    private fun onInboxSurface(runtime: PlaybookRuntime): Boolean =
+        runtime.currentPageHint() == PageHint.INBOX || runtime.looksLikeInboxListSurface()
 
     fun goDmThread(runtime: PlaybookRuntime, openTitleHint: String?): NavResult {
         val hint = openTitleHint?.trim()?.takeIf { it.isNotEmpty() }
@@ -145,15 +169,30 @@ object SurfaceNavigator {
 
     internal fun looksLikeInboxHub(runtime: PlaybookRuntime): Boolean {
         val blob = surfaceBlob(runtime)
-        return (blob.contains("赞|收藏") || blob.contains("赞和收藏")) &&
-            (blob.contains("私信") || blob.contains("评论")) &&
-            blob.contains("消息")
+        if (!blob.contains("消息")) return false
+        val hubChrome = blob.contains("赞和收藏") ||
+            blob.contains("赞|收藏") ||
+            blob.contains("评论和@") ||
+            blob.contains("新增关注")
+        val secondary = blob.contains("私信") ||
+            blob.contains("评论") ||
+            blob.contains("系统通知") ||
+            blob.contains("陌生人消息")
+        return hubChrome && secondary
     }
 
     internal fun looksLikeProfile(runtime: PlaybookRuntime): Boolean {
-        if (looksLikeInboxHub(runtime)) return false
+        if (looksLikeInboxHub(runtime)) {
+            // ViewPager can bleed hub chrome; still accept clear profile identity.
+            val blob = surfaceBlob(runtime)
+            return blob.contains("编辑主页") ||
+                blob.contains("小红书号") ||
+                blob.contains("获赞与收藏")
+        }
         val blob = surfaceBlob(runtime)
-        return blob.contains("编辑资料") ||
+        return blob.contains("编辑主页") ||
+            blob.contains("编辑资料") ||
+            blob.contains("小红书号") ||
             (blob.contains("粉丝") && blob.contains("关注")) ||
             (blob.contains("笔记") && (blob.contains("赞过") || blob.contains("收藏")))
     }
@@ -205,6 +244,10 @@ object SurfaceNavigator {
         val bounds = node.bounds ?: return false
         return runtime.tap(bounds.centerX, bounds.centerY)
     }
+
+    /** Public bottom-tab tap for playbooks (publish / inbox / profile). */
+    fun tapBottomTab(runtime: PlaybookRuntime, label: String): Boolean =
+        tapBottomTabLabeled(runtime, label)
 
     private fun openNoteByHints(
         runtime: PlaybookRuntime,
@@ -308,6 +351,8 @@ object SurfaceNavigator {
 
     private fun clickMessageTab(runtime: PlaybookRuntime): Boolean =
         tapBottomTabLabeled(runtime, "消息") ||
+            tapBottomNavFromRight(runtime, 1) ||
+            runtime.tap(756, 2294) ||
             runtime.click("text=消息", allowFinal = false, timeoutMs = 5_000) ||
             runtime.click("contentDescription=消息", allowFinal = false, timeoutMs = 3_000) ||
             runtime.clickTextContaining("消息", timeoutMs = 3_000)

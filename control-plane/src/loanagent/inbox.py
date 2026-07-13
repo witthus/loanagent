@@ -58,6 +58,8 @@ class InboxMessageRecord:
     sender_summary: str | None
     body_summary: str | None
     created_at: datetime
+    sort_index: int = 0
+    posted_at_text: str | None = None
 
 
 @dataclass(frozen=True)
@@ -85,6 +87,29 @@ class InboxService:
     ) -> list[InboxThreadRecord]:
         results: list[InboxThreadRecord] = []
         with psycopg.connect(self.database_url) as connection:
+            # Successful inbox sync replaces the account thread list; stale false positives go away.
+            connection.execute(
+                """
+                DELETE FROM inbox_messages
+                WHERE thread_id IN (
+                    SELECT thread_id FROM inbox_threads WHERE account_id = %s
+                )
+                """,
+                (account_id,),
+            )
+            connection.execute(
+                """
+                DELETE FROM leads
+                WHERE thread_id IN (
+                    SELECT thread_id FROM inbox_threads WHERE account_id = %s
+                )
+                """,
+                (account_id,),
+            )
+            connection.execute(
+                "DELETE FROM inbox_threads WHERE account_id = %s",
+                (account_id,),
+            )
             for item in threads:
                 title_summary = str(item["title_summary"])
                 preview_summary = item.get("preview_summary")
@@ -115,9 +140,29 @@ class InboxService:
                     ),
                 ).fetchone()
                 thread = _thread_from_row(row)
-                messages = item.get("messages") or []
+                messages = list(item.get("messages") or [])
                 if messages:
-                    self._add_messages(connection, thread.thread_id, list(messages))
+                    inserted = self._add_messages(connection, thread.thread_id, messages)
+                    preview = _preview_from_messages(inserted) or preview_summary
+                    if preview != thread.preview_summary:
+                        connection.execute(
+                            """
+                            UPDATE inbox_threads
+                            SET preview_summary = %s, updated_at = CURRENT_TIMESTAMP
+                            WHERE thread_id = %s
+                            """,
+                            (preview, thread.thread_id),
+                        )
+                        thread = InboxThreadRecord(
+                            thread_id=thread.thread_id,
+                            account_id=thread.account_id,
+                            title_summary=thread.title_summary,
+                            preview_summary=preview,
+                            unread=thread.unread,
+                            last_sync_at=thread.last_sync_at,
+                            created_at=thread.created_at,
+                            updated_at=thread.updated_at,
+                        )
                 results.append(thread)
         return results
 
@@ -209,10 +254,11 @@ class InboxService:
         with psycopg.connect(self.database_url) as connection:
             rows = connection.execute(
                 """
-                SELECT message_id, thread_id, sender_summary, body_summary, created_at
+                SELECT message_id, thread_id, sender_summary, body_summary, created_at,
+                    sort_index, posted_at_text
                 FROM inbox_messages
                 WHERE thread_id = %s
-                ORDER BY created_at, message_id
+                ORDER BY sort_index, created_at, message_id
                 """,
                 (thread_id,),
             ).fetchall()
@@ -223,6 +269,8 @@ class InboxService:
                 sender_summary=row[2],
                 body_summary=row[3],
                 created_at=row[4],
+                sort_index=row[5] if len(row) > 5 else 0,
+                posted_at_text=row[6] if len(row) > 6 else None,
             )
             for row in rows
         ]
@@ -255,7 +303,7 @@ class InboxService:
         return self.task_service.create_and_dispatch(
             account_id=account_id,
             playbook="inbox_sync@1.0",
-            params={},
+            params={"max_items": 20, "max_threads": 8, "open_threads": True},
             source="manual",
         )
 
@@ -283,22 +331,32 @@ class InboxService:
         messages: list[Mapping[str, Any]],
     ) -> list[InboxMessageRecord]:
         results: list[InboxMessageRecord] = []
-        for item in messages:
+        for index, item in enumerate(messages):
             sender = item.get("sender_summary")
             body = item.get("body_summary")
+            posted_at = item.get("posted_at_text")
+            sort_index = item.get("sort_index", index)
+            try:
+                sort_index = int(sort_index)
+            except (TypeError, ValueError):
+                sort_index = index
             row = connection.execute(
                 """
                 INSERT INTO inbox_messages (
-                    message_id, thread_id, sender_summary, body_summary
+                    message_id, thread_id, sender_summary, body_summary,
+                    sort_index, posted_at_text
                 )
-                VALUES (%s, %s, %s, %s)
-                RETURNING message_id, thread_id, sender_summary, body_summary, created_at
+                VALUES (%s, %s, %s, %s, %s, %s)
+                RETURNING message_id, thread_id, sender_summary, body_summary, created_at,
+                    sort_index, posted_at_text
                 """,
                 (
                     str(uuid4()),
                     thread_id,
-                    None if sender is None else str(sender),
-                    None if body is None else str(body),
+                    None if sender is None else str(sender)[:256],
+                    None if body is None else str(body)[:512],
+                    sort_index,
+                    None if posted_at is None else str(posted_at)[:64],
                 ),
             ).fetchone()
             results.append(
@@ -308,6 +366,8 @@ class InboxService:
                     sender_summary=row[2],
                     body_summary=row[3],
                     created_at=row[4],
+                    sort_index=row[5] if len(row) > 5 else sort_index,
+                    posted_at_text=row[6] if len(row) > 6 else None,
                 )
             )
         return results
@@ -318,6 +378,20 @@ class InboxService:
             (thread_id,),
         ).fetchone()
         return row is not None
+
+
+def _preview_from_messages(messages: list[InboxMessageRecord], limit: int = 3) -> str | None:
+    parts: list[str] = []
+    for message in messages[-limit:]:
+        body = (message.body_summary or "").strip()
+        if not body:
+            continue
+        sender = (message.sender_summary or "").strip()
+        parts.append(f"{sender}: {body}" if sender else body)
+    if not parts:
+        return None
+    preview = " ｜ ".join(parts)
+    return preview if len(preview) <= 240 else preview[:240]
 
 
 def _thread_from_row(row: tuple) -> InboxThreadRecord:

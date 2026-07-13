@@ -21,6 +21,7 @@ DEFAULT_SOURCE = "manual"
 READONLY_PLAYBOOKS = {
     "ensure_app_ready",
     "read_comments",
+    "sync_notes",
     "inbox_sync",
     "inbox_open_thread",
 }
@@ -319,12 +320,19 @@ class TaskService:
                 payload=result_payload,
             )
             return
+        if kind == "notes":
+            from loanagent.notes import NotesService
+
+            NotesService(self.database_url, self).replace_notes_from_payload(
+                account_id=task.account_id,
+                payload=result_payload,
+            )
+            return
         if kind == "inbox":
             from loanagent.inbox import InboxService
 
             threads = list(result_payload.get("threads") or [])
-            if threads:
-                InboxService(self.database_url, self).ingest(task.account_id, threads)
+            InboxService(self.database_url, self).ingest(task.account_id, threads)
             return
         if kind == "thread":
             from loanagent.inbox import InboxService, InboxThreadNotFoundError

@@ -21,12 +21,12 @@ services:
       OPS_TOKEN: ${OPS_TOKEN}
       DEVICE_TOKEN: ${DEVICE_TOKEN}
       S3_ENDPOINT: http://minio:9000
-      MEDIA_ROOT: ${MEDIA_ROOT:-/var/lib/loanagent/media}
+      MEDIA_ROOT: ${MEDIA_ROOT:-/app/media}
       MEDIA_SIGNING_SECRET: ${MEDIA_SIGNING_SECRET:-change-me-media-signing}
       PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-http://119.45.36.208}
       OPS_WEB_DIST: /app/static/ops-web
     volumes:
-      - media-data:/var/lib/loanagent/media
+      - media-data:/app/media
     ports:
       - "80:8000"
     healthcheck:

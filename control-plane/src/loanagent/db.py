@@ -3,7 +3,7 @@ from __future__ import annotations
 import psycopg
 
 
-FLEET_SCHEMA_VERSION = 16
+FLEET_SCHEMA_VERSION = 17
 
 
 def migrate_fleet_schema(database_url: str) -> None:
@@ -308,6 +308,58 @@ def migrate_fleet_schema(database_url: str) -> None:
                 """
             )
             _record_migration(connection, 16)
+
+        if 17 not in applied:
+            connection.execute(
+                """
+                ALTER TABLE devices
+                ADD COLUMN IF NOT EXISTS display_name TEXT
+                """
+            )
+            _record_migration(connection, 17)
+
+        if 18 not in applied:
+            connection.execute(
+                """
+                ALTER TABLE published_notes
+                ADD COLUMN IF NOT EXISTS like_count INTEGER,
+                ADD COLUMN IF NOT EXISTS collect_count INTEGER,
+                ADD COLUMN IF NOT EXISTS read_count INTEGER
+                """
+            )
+            _record_migration(connection, 18)
+
+        if 19 not in applied:
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS note_comment_nodes (
+                    node_id TEXT PRIMARY KEY,
+                    note_id TEXT NOT NULL REFERENCES published_notes(note_id),
+                    account_id TEXT NOT NULL REFERENCES accounts(account_id),
+                    parent_node_id TEXT,
+                    root_node_id TEXT NOT NULL,
+                    depth INTEGER NOT NULL DEFAULT 0,
+                    author_summary TEXT NOT NULL,
+                    body_summary TEXT NOT NULL,
+                    posted_at_text TEXT,
+                    reply_to_author TEXT,
+                    sort_index INTEGER NOT NULL DEFAULT 0,
+                    locator_hint TEXT,
+                    source_task_id TEXT,
+                    synced_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE (note_id, sort_index)
+                )
+                """
+            )
+            connection.execute(
+                """
+                ALTER TABLE inbox_messages
+                ADD COLUMN IF NOT EXISTS sort_index INTEGER NOT NULL DEFAULT 0,
+                ADD COLUMN IF NOT EXISTS posted_at_text TEXT
+                """
+            )
+            _record_migration(connection, 19)
 
 
 def _record_migration(connection: psycopg.Connection, version: int) -> None:

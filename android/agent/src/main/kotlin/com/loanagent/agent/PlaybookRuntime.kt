@@ -13,6 +13,11 @@ interface PlaybookRuntime {
     fun extractComments(maxItems: Int = 20): List<ExtractedComment>
     fun extractInboxThreads(maxItems: Int = 20): List<ExtractedInboxThread>
     fun extractDmMessages(maxItems: Int = 20): List<ExtractedDmMessage>
+    fun extractProfileNotes(maxItems: Int = 30): List<ExtractedProfileNote> = emptyList()
+    fun looksLikeInboxListSurface(): Boolean = false
+    fun looksLikeOpenDmThreadSurface(): Boolean = false
+    fun looksLikeCommentsSurface(): Boolean = false
+    fun looksLikeProfileSurface(): Boolean = false
     fun click(selector: String, allowFinal: Boolean = false, timeoutMs: Long = 10_000): Boolean
     /** Click first node whose text or contentDescription contains [fragment] (navigation aid). */
     fun clickTextContaining(fragment: String, timeoutMs: Long = 8_000): Boolean

@@ -2,7 +2,7 @@
 # Single-container Redmi M0 matrix. Avoids nested host/docker quoting bugs.
 set -euo pipefail
 
-SERIAL="${REDMI_SERIAL:-192.168.10.13:42255}"
+SERIAL="${REDMI_SERIAL:-192.168.3.157:40849}"
 ENDPOINT="${REDMI_ADB_ENDPOINT:-$SERIAL}"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 

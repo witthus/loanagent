@@ -7,6 +7,11 @@ import psycopg
 
 from loanagent.db import migrate_fleet_schema
 
+_DEVICE_COLUMNS = """
+    device_id, agent_version, manufacturer, model, online, last_seen_at,
+    wifi_connected, a11y_bound, cellular_ok, created_at, updated_at, display_name
+"""
+
 
 @dataclass(frozen=True)
 class DeviceRecord:
@@ -21,6 +26,7 @@ class DeviceRecord:
     cellular_ok: bool | None
     created_at: datetime
     updated_at: datetime
+    display_name: str | None = None
 
 
 class DeviceNotFoundError(Exception):
@@ -41,22 +47,23 @@ class DeviceRepository:
         agent_version: str | None = None,
         manufacturer: str | None = None,
         model: str | None = None,
+        display_name: str | None = None,
     ) -> DeviceRecord:
         self._validate_device_id(device_id)
         with psycopg.connect(self.database_url) as connection:
             row = connection.execute(
-                """
-                INSERT INTO devices (device_id, agent_version, manufacturer, model)
-                VALUES (%s, %s, %s, %s)
+                f"""
+                INSERT INTO devices (device_id, agent_version, manufacturer, model, display_name)
+                VALUES (%s, %s, %s, %s, %s)
                 ON CONFLICT (device_id) DO UPDATE
                 SET agent_version = COALESCE(EXCLUDED.agent_version, devices.agent_version),
                     manufacturer = COALESCE(EXCLUDED.manufacturer, devices.manufacturer),
                     model = COALESCE(EXCLUDED.model, devices.model),
+                    display_name = COALESCE(EXCLUDED.display_name, devices.display_name),
                     updated_at = CURRENT_TIMESTAMP
-                RETURNING device_id, agent_version, manufacturer, model, online, last_seen_at,
-                    wifi_connected, a11y_bound, cellular_ok, created_at, updated_at
+                RETURNING {_DEVICE_COLUMNS}
                 """,
-                (device_id, agent_version, manufacturer, model),
+                (device_id, agent_version, manufacturer, model, display_name),
             ).fetchone()
         return _device_from_row(row)
 
@@ -72,7 +79,7 @@ class DeviceRepository:
         self._validate_device_id(device_id)
         with psycopg.connect(self.database_url) as connection:
             row = connection.execute(
-                """
+                f"""
                 INSERT INTO devices (
                     device_id, agent_version, online, last_seen_at, wifi_connected,
                     a11y_bound, cellular_ok
@@ -86,8 +93,7 @@ class DeviceRepository:
                     a11y_bound = COALESCE(EXCLUDED.a11y_bound, devices.a11y_bound),
                     cellular_ok = COALESCE(EXCLUDED.cellular_ok, devices.cellular_ok),
                     updated_at = CURRENT_TIMESTAMP
-                RETURNING device_id, agent_version, manufacturer, model, online, last_seen_at,
-                    wifi_connected, a11y_bound, cellular_ok, created_at, updated_at
+                RETURNING {_DEVICE_COLUMNS}
                 """,
                 (device_id, agent_version, wifi_connected, a11y_bound, cellular_ok),
             ).fetchone()
@@ -96,9 +102,8 @@ class DeviceRepository:
     def get(self, device_id: str) -> DeviceRecord:
         with psycopg.connect(self.database_url) as connection:
             row = connection.execute(
-                """
-                SELECT device_id, agent_version, manufacturer, model, online, last_seen_at,
-                    wifi_connected, a11y_bound, cellular_ok, created_at, updated_at
+                f"""
+                SELECT {_DEVICE_COLUMNS}
                 FROM devices
                 WHERE device_id = %s
                 """,
@@ -112,9 +117,8 @@ class DeviceRepository:
         self.mark_stale_offline()
         with psycopg.connect(self.database_url) as connection:
             rows = connection.execute(
-                """
-                SELECT device_id, agent_version, manufacturer, model, online, last_seen_at,
-                    wifi_connected, a11y_bound, cellular_ok, created_at, updated_at
+                f"""
+                SELECT {_DEVICE_COLUMNS}
                 FROM devices
                 ORDER BY device_id
                 """
@@ -128,21 +132,22 @@ class DeviceRepository:
         manufacturer: str | None = None,
         model: str | None = None,
         online: bool | None = None,
+        display_name: str | None = None,
     ) -> DeviceRecord:
         self.get(device_id)
         with psycopg.connect(self.database_url) as connection:
             row = connection.execute(
-                """
+                f"""
                 UPDATE devices
                 SET manufacturer = COALESCE(%s, manufacturer),
                     model = COALESCE(%s, model),
                     online = COALESCE(%s, online),
+                    display_name = COALESCE(%s, display_name),
                     updated_at = CURRENT_TIMESTAMP
                 WHERE device_id = %s
-                RETURNING device_id, agent_version, manufacturer, model, online, last_seen_at,
-                    wifi_connected, a11y_bound, cellular_ok, created_at, updated_at
+                RETURNING {_DEVICE_COLUMNS}
                 """,
-                (manufacturer, model, online, device_id),
+                (manufacturer, model, online, display_name, device_id),
             ).fetchone()
         return _device_from_row(row)
 
@@ -186,4 +191,5 @@ def _device_from_row(row: tuple) -> DeviceRecord:
         cellular_ok=row[8],
         created_at=row[9],
         updated_at=row[10],
+        display_name=row[11] if len(row) > 11 else None,
     )

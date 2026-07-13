@@ -213,6 +213,7 @@ class DevicePatchPayload(BaseModel):
     manufacturer: str | None = Field(default=None, min_length=1, max_length=128)
     model: str | None = Field(default=None, min_length=1, max_length=128)
     online: bool | None = None
+    display_name: str | None = Field(default=None, min_length=1, max_length=256)
 
 
 @app.get("/api/v1/devices/{device_id}", dependencies=[Depends(require_ops)])

@@ -11,6 +11,8 @@ type Message = {
   sender_summary: string | null
   body_summary: string | null
   created_at: string
+  posted_at_text?: string | null
+  sort_index?: number
 }
 
 const route = useRoute()
@@ -90,7 +92,7 @@ onMounted(() => {
       <article v-for="m in messages" :key="m.message_id" class="bubble">
         <header>{{ m.sender_summary || '对方' }}</header>
         <p>{{ m.body_summary || '（无内容）' }}</p>
-        <time class="muted">{{ m.created_at }}</time>
+        <time class="muted">{{ m.posted_at_text || m.created_at }}</time>
       </article>
     </div>
     <form class="panel" @submit.prevent="sendReply">

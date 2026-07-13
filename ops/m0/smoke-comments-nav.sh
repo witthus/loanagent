@@ -3,7 +3,7 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$ROOT"
-SERIAL="${1:-192.168.10.13:42367}"
+SERIAL="${1:-192.168.3.157:40849}"
 NOTE_ID="${2:-4624a6a4-50ce-4973-b73a-cf8e758ad496}"
 
 set -a
