@@ -11,6 +11,19 @@ data class UiBounds(
     val isUsable: Boolean get() = right > left && bottom > top
 }
 
+/** Resolve the label used for selector matching on editable fields (hint when text is empty). */
+object AccessibleText {
+    fun resolve(text: CharSequence?, hint: CharSequence?): String? {
+        val visible = text?.toString()?.trim().orEmpty()
+        if (visible.isNotEmpty()) return visible
+        val hintValue = hint?.toString()?.trim().orEmpty()
+        return hintValue.takeIf { it.isNotEmpty() }
+    }
+
+    fun matchesSelector(selectorText: String?, text: CharSequence?, hint: CharSequence?): Boolean =
+        selectorText == null || resolve(text, hint) == selectorText
+}
+
 data class UiNode(
     val viewId: String? = null,
     val text: String? = null,

@@ -33,6 +33,7 @@ services:
       OPS_TOKEN: ${OPS_TOKEN:-dev-only-ops-token}
       DEVICE_TOKEN: ${DEVICE_TOKEN:-dev-only-device-token}
       S3_ENDPOINT: http://minio:9000
+      OPS_WEB_DIST: /workspace/ops-web/dist
     volumes:
       - type: bind
         source: ../control-plane
@@ -45,6 +46,10 @@ services:
       - type: bind
         source: ../android
         target: /workspace/android
+        read_only: true
+      - type: bind
+        source: ../ops-web
+        target: /workspace/ops-web
         read_only: true
       - control-plane-venv:/home/loanagent/.venv
       - control-plane-uv-cache:/home/loanagent/.cache/uv
@@ -156,6 +161,27 @@ services:
       retries: 12
       start_period: 10s
 
+  ops-web:
+    <<: *default-security
+    profiles: ["web"]
+    build:
+      context: ..
+      dockerfile: docker/ops-web/Dockerfile
+    working_dir: /workspace/ops-web
+    environment:
+      VITE_API_PROXY: http://control-plane:8000
+    command: ["npm", "run", "dev", "--", "--host", "0.0.0.0", "--port", "5173"]
+    volumes:
+      - type: bind
+        source: ../ops-web
+        target: /workspace/ops-web
+      - ops-web-node-modules:/workspace/ops-web/node_modules
+    ports:
+      - "127.0.0.1:5173:5173"
+    depends_on:
+      control-plane:
+        condition: service_healthy
+
   android-builder:
     <<: *default-security
     profiles: ["android"]
@@ -207,3 +233,4 @@ volumes:
   minio-data:
   gradle-cache:
   android-work:
+  ops-web-node-modules:

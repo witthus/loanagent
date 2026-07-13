@@ -1,0 +1,38 @@
+---
+description: Use China mainland mirrors when deploying or installing on the CN server
+alwaysApply: true
+---
+
+# China Mainland Server Network
+
+The project deploy host (`119.45.36.208`, `/opt/loanagent`) is in **mainland China**. Direct pulls from Docker Hub, GHCR, PyPI, npm, etc. are often slow or blocked. Always prefer mainland mirrors for remote install/build/deploy.
+
+## Docker
+
+- Prefer DaoCloud-prefixed images already used on this host, e.g.:
+  - `docker.m.daocloud.io/library/postgres:16-alpine`
+  - `docker.m.daocloud.io/library/python:3.12.11-slim-bookworm`
+  - `docker.m.daocloud.io/emqx/emqx:5.8.6`
+  - `docker.m.daocloud.io/minio/minio:<tag>`
+- Host `/etc/docker/daemon.json` may already set `"registry-mirrors": ["https://docker.m.daocloud.io"]` — still use explicit DaoCloud image names when Hub pulls stall.
+- Server Dockerfiles: `docker/control-plane/Dockerfile.server` (mirrored bases). Prefer it over Hub/GHCR bases for remote builds.
+- Reuse images already present on the host (`docker images`) instead of re-pulling when possible.
+
+## Python / uv / apt
+
+- Prefer Tsinghua / Aliyun / Douban PyPI mirrors when installing on the server (pip/`uv` index URL).
+- Prefer Aliyun / Tsinghua apt mirrors for Debian/Ubuntu package installs on the server.
+
+## Do not
+
+```bash
+# ❌ BAD — often hangs from this host
+docker pull postgres:16.9-alpine
+docker pull ghcr.io/astral-sh/uv:...
+
+# ✅ GOOD
+docker pull docker.m.daocloud.io/library/postgres:16-alpine
+# build with Dockerfile.server / compose.server.yaml mirrored images
+```
+
+Local Mac Docker Compose (`infra/compose.yaml`) may keep digest-pinned Hub images for reproducibility; **server** deploy (`infra/compose.server.yaml`) must stay mirror-friendly.

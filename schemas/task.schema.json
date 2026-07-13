@@ -1,0 +1,246 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://loanagent.local/schemas/task.schema.json",
+  "title": "Task",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "task_id",
+    "operation_id",
+    "playbook",
+    "params",
+    "effect_class",
+    "effect_committed",
+    "status",
+    "reconcile_required",
+    "priority",
+    "timeout_sec",
+    "source"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "pattern": "^[1-9][0-9]*\\.[0-9]+$"
+    },
+    "task_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "operation_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "device_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "account_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "playbook": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]*@[0-9]+\\.[0-9]+$"
+    },
+    "params": {
+      "type": "object"
+    },
+    "effect_class": {
+      "enum": [
+        "readonly",
+        "idempotent",
+        "non_idempotent"
+      ]
+    },
+    "effect_committed": {
+      "type": "boolean"
+    },
+    "status": {
+      "enum": [
+        "queued",
+        "accepted",
+        "executing",
+        "effect_committed",
+        "reported",
+        "succeeded",
+        "failed",
+        "cancelled",
+        "unknown",
+        "reconcile_required"
+      ]
+    },
+    "reconcile_required": {
+      "type": "boolean"
+    },
+    "error_code": {
+      "$ref": "#/$defs/errorCode"
+    },
+    "priority": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 100
+    },
+    "schedule_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "timeout_sec": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "retry_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "max_attempts"
+      ],
+      "properties": {
+        "max_attempts": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "source": {
+      "enum": [
+        "scheduler",
+        "agent",
+        "manual"
+      ]
+    },
+    "result_payload": {
+      "type": "object"
+    }
+  },
+  "$defs": {
+    "errorCode": {
+      "type": "string",
+      "enum": [
+        "DEVICE_OFFLINE",
+        "DEVICE_LOCKED",
+        "SCREEN_NOT_READY",
+        "LAUNCH_BLOCKED",
+        "UI_NOT_FOUND",
+        "APP_CRASH",
+        "BUSINESS_BLOCKED",
+        "TIMEOUT",
+        "PRECONDITION",
+        "A11Y_DISABLED",
+        "EFFECT_UNKNOWN"
+      ]
+    }
+  },
+  "oneOf": [
+    {
+      "required": [
+        "device_id"
+      ],
+      "not": {
+        "required": [
+          "account_id"
+        ]
+      }
+    },
+    {
+      "required": [
+        "account_id"
+      ],
+      "not": {
+        "required": [
+          "device_id"
+        ]
+      }
+    }
+  ],
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "const": "unknown"
+          }
+        },
+        "required": [
+          "status"
+        ]
+      },
+      "then": {
+        "properties": {
+          "reconcile_required": {
+            "const": true
+          },
+          "error_code": {
+            "const": "EFFECT_UNKNOWN"
+          }
+        },
+        "required": [
+          "error_code"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "const": "reconcile_required"
+          }
+        },
+        "required": [
+          "status"
+        ]
+      },
+      "then": {
+        "properties": {
+          "reconcile_required": {
+            "const": true
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "effect_committed": {
+            "const": true
+          }
+        },
+        "required": [
+          "effect_committed"
+        ]
+      },
+      "then": {
+        "properties": {
+          "status": {
+            "enum": [
+              "effect_committed",
+              "reported",
+              "succeeded",
+              "unknown",
+              "reconcile_required"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "const": "effect_committed"
+          }
+        },
+        "required": [
+          "status"
+        ]
+      },
+      "then": {
+        "properties": {
+          "effect_committed": {
+            "const": true
+          }
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,20 @@
+{
+  "version": "1.0",
+  "topics": {
+    "commands": "devices/{deviceId}/commands",
+    "events": "devices/{deviceId}/events"
+  },
+  "qos": 1,
+  "delivery_semantics": "at_least_once",
+  "deduplication_key": "task_id",
+  "replay_protection": [
+    "sequence",
+    "nonce"
+  ],
+  "rules": {
+    "deduplication": "Receivers persist task_id and must not execute a duplicate delivery.",
+    "sequence": "Receivers reject a sequence lower than or equal to the last accepted sequence for the signing key.",
+    "nonce": "Receivers reject a nonce already observed inside the configured replay window.",
+    "effect_checkpoint": "A committed or uncertain non-idempotent effect must not be automatically re-executed."
+  }
+}

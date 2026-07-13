@@ -109,6 +109,7 @@ class DeviceRepository:
         return _device_from_row(row)
 
     def list(self) -> list[DeviceRecord]:
+        self.mark_stale_offline()
         with psycopg.connect(self.database_url) as connection:
             rows = connection.execute(
                 """
@@ -119,6 +120,52 @@ class DeviceRepository:
                 """
             ).fetchall()
         return [_device_from_row(row) for row in rows]
+
+    def patch(
+        self,
+        device_id: str,
+        *,
+        manufacturer: str | None = None,
+        model: str | None = None,
+        online: bool | None = None,
+    ) -> DeviceRecord:
+        self.get(device_id)
+        with psycopg.connect(self.database_url) as connection:
+            row = connection.execute(
+                """
+                UPDATE devices
+                SET manufacturer = COALESCE(%s, manufacturer),
+                    model = COALESCE(%s, model),
+                    online = COALESCE(%s, online),
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE device_id = %s
+                RETURNING device_id, agent_version, manufacturer, model, online, last_seen_at,
+                    wifi_connected, a11y_bound, cellular_ok, created_at, updated_at
+                """,
+                (manufacturer, model, online, device_id),
+            ).fetchone()
+        return _device_from_row(row)
+
+    def mark_stale_offline(self, *, stale_after_sec: int = 90) -> int:
+        """Mark devices offline when heartbeat is older than stale_after_sec."""
+        if stale_after_sec < 1:
+            raise ValueError("stale_after_sec must be >= 1")
+        with psycopg.connect(self.database_url) as connection:
+            rows = connection.execute(
+                """
+                UPDATE devices
+                SET online = FALSE,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE online = TRUE
+                  AND (
+                    last_seen_at IS NULL
+                    OR last_seen_at < CURRENT_TIMESTAMP - (%s * INTERVAL '1 second')
+                  )
+                RETURNING device_id
+                """,
+                (stale_after_sec,),
+            ).fetchall()
+        return len(rows)
 
     @staticmethod
     def _validate_device_id(device_id: str) -> None:

@@ -276,3 +276,50 @@ def test_account_api_patches_pauses_and_resumes_account() -> None:
     assert paused.json()["status"] == "paused"
     assert resumed.status_code == 200
     assert resumed.json()["status"] == "active"
+
+
+def test_mark_stale_offline_clears_online_flag() -> None:
+    from loanagent.devices import DeviceRepository
+
+    device_id = unique_id("device-stale")
+    repository = DeviceRepository(DATABASE_URL)
+    repository.migrate()
+    repository.heartbeat(device_id=device_id, agent_version="0.1.0", a11y_bound=True)
+    with psycopg.connect(DATABASE_URL) as connection:
+        connection.execute(
+            """
+            UPDATE devices
+            SET last_seen_at = CURRENT_TIMESTAMP - INTERVAL '5 minutes'
+            WHERE device_id = %s
+            """,
+            (device_id,),
+        )
+        connection.commit()
+    changed = repository.mark_stale_offline(stale_after_sec=90)
+    device = repository.get(device_id)
+    assert changed >= 1
+    assert device.online is False
+
+
+def test_device_get_and_patch_routes() -> None:
+    device_id = unique_id("device-api")
+    with TestClient(app) as client:
+        client.post(
+            f"/api/v1/devices/{device_id}/heartbeat",
+            headers=device_headers(),
+            json={"agent_version": "0.5.0", "a11y_bound": True},
+        )
+        got = client.get(f"/api/v1/devices/{device_id}", headers=ops_headers())
+        patched = client.patch(
+            f"/api/v1/devices/{device_id}",
+            headers=ops_headers(),
+            json={"manufacturer": "Xiaomi", "model": "Turbo"},
+        )
+        missing = client.get("/api/v1/devices/does-not-exist", headers=ops_headers())
+    assert got.status_code == 200
+    assert got.json()["device_id"] == device_id
+    assert got.json()["a11y_bound"] is True
+    assert patched.status_code == 200
+    assert patched.json()["manufacturer"] == "Xiaomi"
+    assert patched.json()["model"] == "Turbo"
+    assert missing.status_code == 404

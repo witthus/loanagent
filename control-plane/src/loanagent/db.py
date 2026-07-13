@@ -3,7 +3,7 @@ from __future__ import annotations
 import psycopg
 
 
-FLEET_SCHEMA_VERSION = 11
+FLEET_SCHEMA_VERSION = 16
 
 
 def migrate_fleet_schema(database_url: str) -> None:
@@ -99,6 +99,215 @@ def migrate_fleet_schema(database_url: str) -> None:
                 """
             )
             _record_migration(connection, 11)
+
+        if 12 not in applied:
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS media_objects (
+                    media_id TEXT PRIMARY KEY,
+                    content_type TEXT NOT NULL,
+                    sha256 TEXT NOT NULL,
+                    byte_size BIGINT NOT NULL CHECK (byte_size >= 0),
+                    storage_path TEXT NOT NULL,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS content_assets (
+                    content_id TEXT PRIMARY KEY,
+                    title TEXT NOT NULL,
+                    body TEXT NOT NULL,
+                    media_ids JSONB NOT NULL DEFAULT '[]'::jsonb,
+                    geo_tags JSONB,
+                    sensitivity_status TEXT NOT NULL DEFAULT 'clean',
+                    sensitivity_hits JSONB NOT NULL DEFAULT '[]'::jsonb,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS schedule_items (
+                    schedule_id TEXT PRIMARY KEY,
+                    account_id TEXT NOT NULL REFERENCES accounts(account_id),
+                    content_id TEXT NOT NULL REFERENCES content_assets(content_id),
+                    window_start TIMESTAMPTZ,
+                    window_end TIMESTAMPTZ,
+                    status TEXT NOT NULL DEFAULT 'ready' CHECK (
+                        status IN (
+                            'draft', 'ready', 'dispatched', 'done', 'failed', 'cancelled'
+                        )
+                    ),
+                    task_id TEXT,
+                    error_code TEXT,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+            _record_migration(connection, 12)
+
+        if 13 not in applied:
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS engagement_chains (
+                    chain_id TEXT PRIMARY KEY,
+                    publish_task_id TEXT NOT NULL UNIQUE,
+                    account_id TEXT NOT NULL,
+                    engager_account_id TEXT,
+                    note_ref TEXT,
+                    status TEXT NOT NULL CHECK (
+                        status IN (
+                            'pending', 'running', 'awaiting_reply',
+                            'done', 'stopped', 'failed'
+                        )
+                    ),
+                    config JSONB NOT NULL DEFAULT
+                        '{"engager_comments":1,"delay_sec":600}'::jsonb,
+                    post_comment_task_ids JSONB NOT NULL DEFAULT '[]'::jsonb,
+                    reply_comment_task_ids JSONB NOT NULL DEFAULT '[]'::jsonb,
+                    stop_reason TEXT,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS alerts (
+                    alert_id TEXT PRIMARY KEY,
+                    kind TEXT NOT NULL,
+                    message TEXT NOT NULL,
+                    ref_id TEXT,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+            _record_migration(connection, 13)
+
+        if 14 not in applied:
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS inbox_threads (
+                    thread_id TEXT PRIMARY KEY,
+                    account_id TEXT NOT NULL REFERENCES accounts(account_id),
+                    title_summary TEXT NOT NULL,
+                    preview_summary TEXT,
+                    unread BOOLEAN NOT NULL DEFAULT FALSE,
+                    last_sync_at TIMESTAMPTZ,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE (account_id, title_summary)
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS inbox_messages (
+                    message_id TEXT PRIMARY KEY,
+                    thread_id TEXT NOT NULL REFERENCES inbox_threads(thread_id),
+                    sender_summary TEXT,
+                    body_summary TEXT,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS leads (
+                    lead_id TEXT PRIMARY KEY,
+                    thread_id TEXT NOT NULL UNIQUE REFERENCES inbox_threads(thread_id),
+                    status TEXT NOT NULL CHECK (
+                        status IN ('new', 'warm', 'hot', 'closed')
+                    ),
+                    note TEXT,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+            _record_migration(connection, 14)
+
+        if 15 not in applied:
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS published_notes (
+                    note_id TEXT PRIMARY KEY,
+                    account_id TEXT NOT NULL REFERENCES accounts(account_id),
+                    publish_task_id TEXT UNIQUE,
+                    content_id TEXT,
+                    title_summary TEXT,
+                    xhs_hint TEXT,
+                    last_synced_at TIMESTAMPTZ,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS note_comments (
+                    comment_id TEXT PRIMARY KEY,
+                    note_id TEXT NOT NULL REFERENCES published_notes(note_id),
+                    account_id TEXT NOT NULL REFERENCES accounts(account_id),
+                    author_summary TEXT NOT NULL,
+                    body_summary TEXT NOT NULL,
+                    locator_hint TEXT,
+                    source_task_id TEXT,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE (note_id, author_summary, body_summary)
+                )
+                """
+            )
+            _record_migration(connection, 15)
+
+        if 16 not in applied:
+            connection.execute(
+                """
+                ALTER TABLE accounts
+                ADD COLUMN IF NOT EXISTS platform TEXT NOT NULL DEFAULT 'xhs'
+                """
+            )
+            connection.execute(
+                """
+                ALTER TABLE content_assets
+                ADD COLUMN IF NOT EXISTS platform TEXT NOT NULL DEFAULT 'xhs'
+                """
+            )
+            connection.execute(
+                """
+                ALTER TABLE engagement_chains
+                ADD COLUMN IF NOT EXISTS platform TEXT NOT NULL DEFAULT 'xhs'
+                """
+            )
+            connection.execute(
+                """
+                ALTER TABLE engagement_chains
+                ADD COLUMN IF NOT EXISTS mode TEXT NOT NULL DEFAULT 'auto'
+                """
+            )
+            connection.execute(
+                """
+                ALTER TABLE engagement_chains
+                ADD COLUMN IF NOT EXISTS engager_account_ids JSONB NOT NULL DEFAULT '[]'::jsonb
+                """
+            )
+            connection.execute(
+                """
+                ALTER TABLE published_notes
+                ADD COLUMN IF NOT EXISTS platform TEXT NOT NULL DEFAULT 'xhs'
+                """
+            )
+            connection.execute(
+                """
+                ALTER TABLE inbox_threads
+                ADD COLUMN IF NOT EXISTS platform TEXT NOT NULL DEFAULT 'xhs'
+                """
+            )
+            _record_migration(connection, 16)
 
 
 def _record_migration(connection: psycopg.Connection, version: int) -> None:

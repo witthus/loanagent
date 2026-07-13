@@ -9,6 +9,9 @@
     <tr>
       <th>Device ID</th>
       <th>Online</th>
+      <th>A11y</th>
+      <th>Wi‑Fi</th>
+      <th>Cellular</th>
       <th>Agent Version</th>
       <th>Manufacturer</th>
       <th>Model</th>
@@ -20,6 +23,9 @@
     <tr>
       <td>{{ device.device_id }}</td>
       <td>{{ device.online }}</td>
+      <td>{{ device.a11y_bound }}</td>
+      <td>{{ device.wifi_connected }}</td>
+      <td>{{ device.cellular_ok }}</td>
       <td>{{ device.agent_version or "" }}</td>
       <td>{{ device.manufacturer or "" }}</td>
       <td>{{ device.model or "" }}</td>
@@ -27,7 +33,7 @@
     </tr>
     {% else %}
     <tr>
-      <td colspan="6">No devices</td>
+      <td colspan="9">No devices</td>
     </tr>
     {% endfor %}
   </tbody>

@@ -143,7 +143,7 @@ internal class M0DebugBridge(
                     command == DebugCommand.SWIPE ||
                     command == DebugCommand.OCR_SAVE
                 ) &&
-            !intent.getBooleanExtra(M0DebugCommandReceiver.EXTRA_CONFIRMED, false)
+            !isConfirmed(intent)
         ) {
             finish("CONFIRMATION_REQUIRED")
             return
@@ -349,10 +349,15 @@ internal class M0DebugBridge(
             ?: throw IllegalArgumentException("Missing selector")
         val selector = StrictSelectorParser.parse(rawSelector)
         if (command == DebugCommand.CLICK && FinalActionPolicy.blocks(selector)) {
-            val allowFinal = intent.getBooleanExtra(M0DebugCommandReceiver.EXTRA_ALLOW_FINAL_ACTION, false)
-            val confirmed = intent.getBooleanExtra(M0DebugCommandReceiver.EXTRA_CONFIRMED, false)
+            val allowFinal = intent.getBooleanExtra(M0DebugCommandReceiver.EXTRA_ALLOW_FINAL_ACTION, false) ||
+                intent.getStringExtra(M0DebugCommandReceiver.EXTRA_ALLOW_FINAL_ACTION)
+                    ?.equals("true", ignoreCase = true) == true
+            val confirmed = isConfirmed(intent)
             if (!(allowFinal && confirmed)) {
-                finish("FINAL_ACTION_UNSUPPORTED", null)
+                finish(
+                    "FINAL_ACTION_UNSUPPORTED",
+                    "\"allow_final_action\":$allowFinal,\"confirmed\":$confirmed",
+                )
                 return CompletedRequestHandle
             }
         }
@@ -466,6 +471,11 @@ internal class M0DebugBridge(
         }
     }
 
+    private fun isConfirmed(intent: Intent): Boolean =
+        intent.getBooleanExtra(M0DebugCommandReceiver.EXTRA_CONFIRMED, false) ||
+            intent.getStringExtra(M0DebugCommandReceiver.EXTRA_CONFIRMED)
+                ?.equals("true", ignoreCase = true) == true
+
     @Suppress("DEPRECATION")
     private fun requireCoordinate(intent: Intent, key: String): Int {
         val raw = intent.extras?.get(key) ?: throw IllegalArgumentException("Missing $key")
@@ -497,27 +507,6 @@ internal class M0DebugBridge(
         OCR_MEMORY,
         OCR_SAVE,
         CLEAR_CACHE,
-    }
-
-    private object FinalActionPolicy {
-        private val exactTerms = setOf(
-            "发布",
-            "发布笔记",
-            "确认发布",
-            "发送",
-            "发送评论",
-            "发送私信",
-            "发表",
-            "提交",
-        )
-        private val idTerms = listOf("publish", "send", "submit")
-
-        fun blocks(selector: Selector): Boolean =
-            selector.text?.trim() in exactTerms ||
-                selector.contentDescription?.trim() in exactTerms ||
-                selector.viewId?.lowercase(Locale.ROOT)?.let { id ->
-                    idTerms.any(id::contains)
-                } == true
     }
 
     private companion object {

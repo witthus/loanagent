@@ -6,11 +6,11 @@ from typing import Literal
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, Field
 
-from loanagent.auth import require_ops
+from loanagent.auth import require_device, require_device_or_ops, require_ops
 from loanagent.tasks import (
     DuplicateTaskError,
     PlaybookForbiddenError,
-    ReadonlyTaskRequiredError,
+    TaskAccessibilityDownError,
     TaskAccountNotFoundError,
     TaskAccountUnavailableError,
     TaskDispatchError,
@@ -37,7 +37,9 @@ class DeviceTaskEventPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     task_id: str = Field(min_length=1, max_length=128)
-    status: Literal["succeeded"]
+    status: Literal["succeeded", "failed"]
+    error_code: str | None = Field(default=None, min_length=1, max_length=64)
+    result_payload: dict | None = None
 
 
 @router.post("/tasks", dependencies=[Depends(require_ops)])
@@ -68,6 +70,12 @@ def create_task(payload: TaskCreatePayload, request: Request) -> dict:
             409,
             "DEVICE_UNAVAILABLE",
             "Account is not bound to an online device.",
+        ) from error
+    except TaskAccessibilityDownError as error:
+        raise _task_http_error(
+            409,
+            "A11Y_DOWN",
+            "Device accessibility service is not bound.",
         ) from error
     except TaskAccountNotFoundError as error:
         raise _task_http_error(
@@ -101,27 +109,42 @@ def list_tasks(
     ]
 
 
-# This test hook models an ops/console simulation path, so it uses ops auth
-# instead of the device heartbeat token.
-@router.post("/devices/{device_id}/events", dependencies=[Depends(require_ops)])
+@router.get("/tasks/{task_id}", dependencies=[Depends(require_ops)])
+def get_task(task_id: str, request: Request) -> dict:
+    try:
+        task = _task_service(request).get(task_id)
+    except TaskNotFoundError as error:
+        raise _task_http_error(
+            404,
+            "TASK_NOT_FOUND",
+            "Task does not exist.",
+        ) from error
+    return asdict(task)
+
+
+@router.get("/devices/{device_id}/commands", dependencies=[Depends(require_device)])
+def list_device_commands(device_id: str, request: Request) -> list[dict]:
+    """HTTP command poll for agents that cannot open outbound MQTT ports."""
+    return _task_service(request).pending_commands_for_device(device_id)
+
+
+# Device token preferred; ops bearer kept for debug Agent and console simulation.
+@router.post("/devices/{device_id}/events", dependencies=[Depends(require_device_or_ops)])
 def accept_device_event(device_id: str, payload: DeviceTaskEventPayload, request: Request) -> dict:
     service = _task_service(request)
     try:
-        task = service.mark_readonly_succeeded_from_event(
+        task = service.mark_from_event(
             device_id=device_id,
             task_id=payload.task_id,
+            status=payload.status,
+            error_code=payload.error_code,
+            result_payload=payload.result_payload,
         )
     except TaskNotFoundError as error:
         raise _task_http_error(
             404,
             "TASK_NOT_FOUND",
             "Task does not exist for this device.",
-        ) from error
-    except ReadonlyTaskRequiredError as error:
-        raise _task_http_error(
-            409,
-            "READONLY_TASK_REQUIRED",
-            "Only readonly tasks can be completed by this test hook.",
         ) from error
     return asdict(task)
 

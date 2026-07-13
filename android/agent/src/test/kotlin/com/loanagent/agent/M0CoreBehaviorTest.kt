@@ -2,10 +2,22 @@ package com.loanagent.agent
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class M0CoreBehaviorTest {
+    @Test
+    fun accessibleTextPrefersVisibleTextThenHint() {
+        assertEquals("已填写", AccessibleText.resolve("已填写", "添加标题"))
+        assertEquals("添加标题", AccessibleText.resolve(null, "添加标题"))
+        assertEquals("添加标题", AccessibleText.resolve("", "添加标题"))
+        assertEquals("添加标题", AccessibleText.resolve("   ", "添加标题"))
+        assertEquals(null, AccessibleText.resolve(null, null))
+        assertTrue(AccessibleText.matchesSelector("添加标题", null, "添加标题"))
+        assertFalse(AccessibleText.matchesSelector("添加标题", null, "添加正文"))
+    }
+
     @Test
     fun snapshotLimitsDepthNodeCountAndTextLength() {
         val root = RawUiNode(
@@ -77,9 +89,9 @@ class M0CoreBehaviorTest {
     fun inboxTabWithLikeCollectCuesStillClassifiesAsInbox() {
         val nodes = listOf(
             UiNode(text = "消息"),
-            UiNode(text = "赞|收藏"),
-            UiNode(text = "评论"),
-            UiNode(text = "登录|消息"),
+            UiNode(text = "赞和收藏"),
+            UiNode(text = "粉丝"),
+            UiNode(text = "系统通知"),
             UiNode(contentDescription = "消息"),
         )
 
@@ -108,6 +120,43 @@ class M0CoreBehaviorTest {
         )
 
         assertEquals(PageHint.LOGIN_REQUIRED, PageClassifier().classify(nodes))
+    }
+
+    @Test
+    fun homeFeedWithBottomMessageTabIsNotInbox() {
+        val nodes = listOf(
+            UiNode(text = "首页"),
+            UiNode(text = "发现"),
+            UiNode(text = "消息"),
+            UiNode(text = "我"),
+            UiNode(text = "赞"),
+            UiNode(text = "收藏"),
+            UiNode(text = "评论"),
+            UiNode(text = "关注"),
+        )
+        assertNotEquals(PageHint.INBOX, PageClassifier().classify(nodes))
+    }
+
+    @Test
+    fun commentComposerHintClassifiesAsComments() {
+        val nodes = listOf(
+            UiNode(text = "评论 1"),
+            UiNode(text = "让大家听到你的声音"),
+            UiNode(text = "赞和收藏"),
+            UiNode(text = "首评"),
+        )
+        assertEquals(PageHint.COMMENTS, PageClassifier().classify(nodes))
+    }
+
+    @Test
+    fun chatComposerClassifiesAsInbox() {
+        val nodes = listOf(
+            UiNode(text = "静生百慧茶叶馆"),
+            UiNode(text = "当前在线"),
+            UiNode(text = "发消息…"),
+            UiNode(text = "你好茶叶不错"),
+        )
+        assertEquals(PageHint.INBOX, PageClassifier().classify(nodes))
     }
 
     @Test

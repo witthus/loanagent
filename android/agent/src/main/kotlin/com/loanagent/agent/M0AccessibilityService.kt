@@ -704,7 +704,7 @@ class M0AccessibilityService :
         root: AccessibilityNodeInfo,
         selector: Selector,
     ): List<AccessibilityNodeInfo>? = try {
-        when {
+        val indexed = when {
             selector.viewId != null ->
                 root.findAccessibilityNodeInfosByViewId(selector.viewId)
             selector.text != null ->
@@ -713,8 +713,49 @@ class M0AccessibilityService :
                 root.findAccessibilityNodeInfosByText(selector.contentDescription)
             else -> null
         }
+        // Hint-only EditTexts are invisible to findAccessibilityNodeInfosByText; fall back to DFS.
+        if (
+            indexed != null &&
+            indexed.isEmpty() &&
+            (selector.text != null || selector.contentDescription != null)
+        ) {
+            collectMatchingNodes(root, selector)
+        } else {
+            indexed
+        }
     } catch (_: RuntimeException) {
         null
+    }
+
+    private fun collectMatchingNodes(
+        root: AccessibilityNodeInfo,
+        selector: Selector,
+    ): List<AccessibilityNodeInfo> {
+        val matches = mutableListOf<AccessibilityNodeInfo>()
+        val stack = ArrayDeque<AccessibilityNodeInfo>()
+        stack.add(AccessibilityNodeInfo.obtain(root))
+        while (stack.isNotEmpty()) {
+            val node = stack.removeLast()
+            try {
+                if (matches(node, selector)) {
+                    matches += AccessibilityNodeInfo.obtain(node)
+                    if (matches.size > 1) {
+                        break
+                    }
+                }
+                for (index in 0 until node.childCount) {
+                    val child = try {
+                        node.getChild(index)
+                    } catch (_: RuntimeException) {
+                        null
+                    } ?: continue
+                    stack.add(child)
+                }
+            } finally {
+                recycle(node)
+            }
+        }
+        return matches
     }
 
     private fun leaseProbe(): TargetLease? = synchronized(targetLock) {
@@ -777,7 +818,7 @@ class M0AccessibilityService :
         }
         return RawUiNode(
             viewId = node.viewIdResourceName,
-            text = node.text?.toString(),
+            text = AccessibleText.resolve(node.text, node.hintText),
             contentDescription = node.contentDescription?.toString(),
             className = node.className?.toString(),
             clickable = node.isClickable,
@@ -790,7 +831,7 @@ class M0AccessibilityService :
 
     private fun matches(node: AccessibilityNodeInfo, selector: Selector): Boolean =
         (selector.viewId == null || node.viewIdResourceName == selector.viewId) &&
-            (selector.text == null || node.text?.toString() == selector.text) &&
+            AccessibleText.matchesSelector(selector.text, node.text, node.hintText) &&
             (selector.contentDescription == null ||
                 node.contentDescription?.toString() == selector.contentDescription) &&
             (selector.className == null || node.className?.toString() == selector.className) &&

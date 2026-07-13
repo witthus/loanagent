@@ -1,0 +1,369 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://loanagent.local/schemas/event.schema.json",
+  "title": "Device protocol event",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "event_id",
+    "device_id",
+    "direction",
+    "type",
+    "occurred_at",
+    "sequence",
+    "nonce",
+    "payload",
+    "signature"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "pattern": "^[1-9][0-9]*\\.[0-9]+$"
+    },
+    "event_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "device_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9._-]+$"
+    },
+    "direction": {
+      "enum": [
+        "upstream",
+        "downstream"
+      ]
+    },
+    "type": {
+      "type": "string"
+    },
+    "occurred_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "task_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "sequence": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "nonce": {
+      "type": "string",
+      "minLength": 8
+    },
+    "payload": {
+      "type": "object"
+    },
+    "signature": {
+      "$ref": "#/$defs/signature"
+    }
+  },
+  "$defs": {
+    "signature": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "algorithm",
+        "key_id",
+        "value"
+      ],
+      "properties": {
+        "algorithm": {
+          "enum": [
+            "Ed25519",
+            "ECDSA-P256-SHA256"
+          ]
+        },
+        "key_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "value": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "assignTaskPayload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "task_id",
+        "playbook",
+        "params"
+      ],
+      "properties": {
+        "task_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "playbook": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]*@[0-9]+\\.[0-9]+$"
+        },
+        "params": {
+          "type": "object"
+        }
+      }
+    },
+    "cancelTaskPayload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "task_id",
+        "reason"
+      ],
+      "properties": {
+        "task_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "configUpdatePayload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "config_version",
+        "download_url"
+      ],
+      "properties": {
+        "config_version": {
+          "type": "string",
+          "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+        },
+        "download_url": {
+          "type": "string",
+          "format": "uri",
+          "pattern": "^https://"
+        }
+      }
+    },
+    "controlPayload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "reason"
+      ],
+      "properties": {
+        "reason": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "heartbeatPayload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "agent_version",
+        "sent_at"
+      ],
+      "properties": {
+        "agent_version": {
+          "type": "string",
+          "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+        },
+        "sent_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    },
+    "taskProgressPayload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "task_id",
+        "status",
+        "progress"
+      ],
+      "properties": {
+        "task_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "status": {
+          "enum": [
+            "accepted",
+            "executing",
+            "effect_committed"
+          ]
+        },
+        "progress": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100
+        }
+      }
+    },
+    "taskResultPayload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "task_id",
+        "result"
+      ],
+      "properties": {
+        "task_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "result": {
+          "enum": [
+            "success",
+            "failed",
+            "cancelled",
+            "unknown"
+          ]
+        }
+      }
+    },
+    "healthAlertPayload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "error_code",
+        "severity"
+      ],
+      "properties": {
+        "error_code": {
+          "type": "string",
+          "minLength": 1
+        },
+        "severity": {
+          "enum": [
+            "warning",
+            "critical"
+          ]
+        }
+      }
+    }
+  },
+  "oneOf": [
+    {
+      "properties": {
+        "direction": {
+          "const": "downstream"
+        },
+        "type": {
+          "const": "assign_task"
+        },
+        "payload": {
+          "$ref": "#/$defs/assignTaskPayload"
+        }
+      }
+    },
+    {
+      "properties": {
+        "direction": {
+          "const": "downstream"
+        },
+        "type": {
+          "const": "cancel_task"
+        },
+        "payload": {
+          "$ref": "#/$defs/cancelTaskPayload"
+        }
+      }
+    },
+    {
+      "properties": {
+        "direction": {
+          "const": "downstream"
+        },
+        "type": {
+          "const": "config_update"
+        },
+        "payload": {
+          "$ref": "#/$defs/configUpdatePayload"
+        }
+      }
+    },
+    {
+      "properties": {
+        "direction": {
+          "const": "downstream"
+        },
+        "type": {
+          "const": "pause"
+        },
+        "payload": {
+          "$ref": "#/$defs/controlPayload"
+        }
+      }
+    },
+    {
+      "properties": {
+        "direction": {
+          "const": "downstream"
+        },
+        "type": {
+          "const": "resume"
+        },
+        "payload": {
+          "$ref": "#/$defs/controlPayload"
+        }
+      }
+    },
+    {
+      "properties": {
+        "direction": {
+          "const": "upstream"
+        },
+        "type": {
+          "const": "heartbeat"
+        },
+        "payload": {
+          "$ref": "#/$defs/heartbeatPayload"
+        }
+      }
+    },
+    {
+      "properties": {
+        "direction": {
+          "const": "upstream"
+        },
+        "type": {
+          "const": "task_progress"
+        },
+        "payload": {
+          "$ref": "#/$defs/taskProgressPayload"
+        }
+      }
+    },
+    {
+      "properties": {
+        "direction": {
+          "const": "upstream"
+        },
+        "type": {
+          "const": "task_result"
+        },
+        "payload": {
+          "$ref": "#/$defs/taskResultPayload"
+        }
+      }
+    },
+    {
+      "properties": {
+        "direction": {
+          "const": "upstream"
+        },
+        "type": {
+          "const": "health_alert"
+        },
+        "payload": {
+          "$ref": "#/$defs/healthAlertPayload"
+        }
+      }
+    }
+  ]
+}

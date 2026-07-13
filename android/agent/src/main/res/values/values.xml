@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Loanagent Agent</string>
+    <string name="accessibility_service_label">Loanagent M0 Accessibility</string>
+    <string name="accessibility_service_description">仅在用户手动启用后，对小红书与 Loanagent Fixture 执行单次本地诊断动作。</string>
+    <string name="ime_label">Loanagent M0 Manual IME</string>
+    <style name="AppTheme" parent="android:style/Theme.Material.Light.NoActionBar" />
+</resources>

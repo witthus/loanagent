@@ -1,0 +1,72 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  control-plane:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Validate Compose configuration
+        run: docker compose -f infra/compose.yaml config
+      - name: Build development and runtime images
+        run: |
+          docker compose -f infra/compose.yaml build control-plane
+          docker build --target runtime -f docker/control-plane/Dockerfile -t loanagent-control-plane:ci .
+      - name: Verify non-root control-plane
+        run: |
+          test "$(docker compose -f infra/compose.yaml run --rm --no-deps control-plane id -u)" != "0"
+      - name: Start enrollment database
+        run: docker compose -f infra/compose.yaml up -d --wait postgres
+      - name: Run control-plane and schema tests
+        run: >-
+          docker compose -f infra/compose.yaml run --rm --no-deps control-plane
+          uv run --frozen pytest
+      - name: Lint control-plane
+        run: >-
+          docker compose -f infra/compose.yaml run --rm --no-deps control-plane
+          uv run --frozen ruff check --no-cache src tests
+
+  android:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Build Android toolchain image
+        run: docker compose -f infra/compose.yaml --profile android build android-builder
+      - name: Verify non-root builder and wrapper checksum
+        run: |
+          test "$(docker compose -f infra/compose.yaml --profile android run --rm --no-deps android-builder id -u)" != "0"
+          docker compose -f infra/compose.yaml --profile android run --rm --no-deps android-builder \
+            sha256sum --check gradle/wrapper/gradle-wrapper.jar.sha256
+      - name: Test, lint, and build Android modules
+        run: >-
+          docker compose -f infra/compose.yaml --profile android run --rm --no-deps android-builder
+          ./gradlew clean test lint lintRelease assembleDebug assembleRelease
+          -Dorg.gradle.dependency.verification.console=verbose --no-daemon
+          --project-cache-dir /home/gradle/work/project-cache
+          --dependency-verification=strict
+      - name: Stage and checksum M0 debug APKs
+        run: bash ops/m0/stage-apks.sh
+      - name: Publish M0 manual debug test artifacts from protected main
+        if: >-
+          github.event_name == 'push' &&
+          github.ref == 'refs/heads/main' &&
+          github.ref_protected
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: M0-MANUAL-UNTRUSTED-DEBUG-TEST-${{ github.sha }}
+          path: |
+            ops/m0/generated/agent-m0-debug.apk
+            ops/m0/generated/device-controller-debug.apk
+            ops/m0/generated/checksums.sha256
+            ops/m0/generated/signing-certificates.sha256
+            ops/m0/generated/provenance.txt
+          if-no-files-found: error
+          retention-days: 14

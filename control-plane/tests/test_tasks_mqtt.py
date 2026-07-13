@@ -68,7 +68,13 @@ def create_bound_account(
     accounts = AccountRepository(DATABASE_URL)
     devices.migrate()
     if online:
-        devices.heartbeat(device_id=device_id, agent_version="0.3.0")
+        devices.heartbeat(
+            device_id=device_id,
+            agent_version="0.3.0",
+            a11y_bound=True,
+            wifi_connected=False,
+            cellular_ok=True,
+        )
     else:
         devices.create(device_id=device_id, agent_version="0.3.0")
     accounts.create(account_id=account_id, role=role, device_id=device_id)
@@ -409,10 +415,16 @@ def test_task_route_lists_tasks_with_filters() -> None:
             headers=ops_headers(),
             params={"account_id": account_id, "status": "accepted"},
         )
+        fetched = client.get(f"/api/v1/tasks/{task_id}", headers=ops_headers())
+        missing = client.get("/api/v1/tasks/does-not-exist", headers=ops_headers())
 
     assert created.status_code == 200
     assert listed.status_code == 200
     assert [task["task_id"] for task in listed.json()] == [task_id]
+    assert fetched.status_code == 200
+    assert fetched.json()["task_id"] == task_id
+    assert missing.status_code == 404
+    assert missing.json()["detail"]["code"] == "TASK_NOT_FOUND"
 
 
 def test_device_event_hook_marks_readonly_task_succeeded_and_effect_committed() -> None:
@@ -443,3 +455,110 @@ def test_device_event_hook_marks_readonly_task_succeeded_and_effect_committed() 
     assert body["task_id"] == task_id
     assert body["status"] == "succeeded"
     assert body["effect_committed"] is True
+
+
+def test_device_http_command_poll_returns_accepted_envelopes() -> None:
+    device_id, account_id = create_bound_account()
+    task_id = unique_id("task")
+    device_token = os.environ["DEVICE_TOKEN"]
+
+    with TestClient(app) as client:
+        client.app.state.task_service = TaskService(DATABASE_URL, RecordingMqttBus())
+        created = client.post(
+            "/api/v1/tasks",
+            headers=ops_headers(),
+            json={
+                "account_id": account_id,
+                "playbook": "ensure_app_ready@1.0",
+                "params": {"probe": True},
+                "task_id": task_id,
+            },
+        )
+        denied = client.get(f"/api/v1/devices/{device_id}/commands")
+        polled = client.get(
+            f"/api/v1/devices/{device_id}/commands",
+            headers={"X-Device-Token": device_token},
+        )
+
+    assert created.status_code == 200
+    assert denied.status_code == 401
+    assert polled.status_code == 200
+    body = polled.json()
+    assert len(body) == 1
+    assert body[0]["task_id"] == task_id
+    assert body[0]["playbook"] == "ensure_app_ready@1.0"
+    assert body[0]["params"] == {"probe": True}
+    assert body[0]["account_id"] == account_id
+    assert body[0]["status"] == "executing"
+
+    with TestClient(app) as client:
+        client.app.state.task_service = TaskService(DATABASE_URL, RecordingMqttBus())
+        second = client.get(
+            f"/api/v1/devices/{device_id}/commands",
+            headers={"X-Device-Token": device_token},
+        )
+        listed = client.get(
+            "/api/v1/tasks",
+            headers=ops_headers(),
+            params={"account_id": account_id, "status": "executing"},
+        )
+    assert second.status_code == 200
+    assert second.json() == []
+    assert listed.status_code == 200
+    assert any(task["task_id"] == task_id for task in listed.json())
+
+
+def test_create_task_rejects_when_a11y_unbound() -> None:
+    device_id = unique_id("device")
+    account_id = unique_id("account")
+    devices = DeviceRepository(DATABASE_URL)
+    accounts = AccountRepository(DATABASE_URL)
+    devices.migrate()
+    devices.heartbeat(
+        device_id=device_id,
+        agent_version="0.3.0",
+        a11y_bound=False,
+        cellular_ok=True,
+    )
+    accounts.create(
+        account_id=account_id,
+        role=AccountRole.PUBLISHER_MAIN,
+        device_id=device_id,
+    )
+    with TestClient(app) as client:
+        client.app.state.task_service = TaskService(DATABASE_URL, RecordingMqttBus())
+        response = client.post(
+            "/api/v1/tasks",
+            headers=ops_headers(),
+            json={
+                "account_id": account_id,
+                "playbook": "ensure_app_ready@1.0",
+                "task_id": unique_id("task"),
+            },
+        )
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "A11Y_DOWN"
+
+
+def test_device_event_accepts_device_token() -> None:
+    device_id, account_id = create_bound_account()
+    task_id = unique_id("task")
+    with TestClient(app) as client:
+        client.app.state.task_service = TaskService(DATABASE_URL, RecordingMqttBus())
+        created = client.post(
+            "/api/v1/tasks",
+            headers=ops_headers(),
+            json={
+                "account_id": account_id,
+                "playbook": "ensure_app_ready@1.0",
+                "task_id": task_id,
+            },
+        )
+        event = client.post(
+            f"/api/v1/devices/{device_id}/events",
+            headers={"X-Device-Token": os.environ["DEVICE_TOKEN"]},
+            json={"task_id": task_id, "status": "succeeded"},
+        )
+    assert created.status_code == 200
+    assert event.status_code == 200
+    assert event.json()["status"] == "succeeded"

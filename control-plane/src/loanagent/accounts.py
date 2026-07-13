@@ -7,6 +7,7 @@ from typing import Any
 import psycopg
 
 from loanagent.db import migrate_fleet_schema
+from loanagent.platforms import DEFAULT_PLATFORM, normalize_platform
 from loanagent.roles import AccountRole
 
 
@@ -18,6 +19,7 @@ PATCHABLE_FIELDS = {
     "daily_publish_quota",
     "inbox_sync_enabled",
     "display_name",
+    "platform",
 }
 
 
@@ -31,6 +33,7 @@ class AccountRecord:
     daily_publish_quota: int
     inbox_sync_enabled: bool
     display_name: str | None
+    platform: str
     created_at: datetime
     updated_at: datetime
 
@@ -65,9 +68,11 @@ class AccountRepository:
         role: AccountRole | str,
         device_id: str | None = None,
         display_name: str | None = None,
+        platform: str | None = None,
     ) -> AccountRecord:
         self._validate_account_id(account_id)
         role = AccountRole(role)
+        platform_value = normalize_platform(platform)
         daily_publish_quota, inbox_sync_enabled = _defaults_for_role(role)
         try:
             with psycopg.connect(self.database_url) as connection:
@@ -75,11 +80,11 @@ class AccountRepository:
                     """
                     INSERT INTO accounts (
                         account_id, role, device_id, daily_publish_quota,
-                        inbox_sync_enabled, display_name
+                        inbox_sync_enabled, display_name, platform
                     )
-                    VALUES (%s, %s, %s, %s, %s, %s)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
                     RETURNING account_id, role, device_id, status, network_policy,
-                        daily_publish_quota, inbox_sync_enabled, display_name,
+                        daily_publish_quota, inbox_sync_enabled, display_name, platform,
                         created_at, updated_at
                     """,
                     (
@@ -89,6 +94,7 @@ class AccountRepository:
                         daily_publish_quota,
                         inbox_sync_enabled,
                         display_name,
+                        platform_value,
                     ),
                 ).fetchone()
         except psycopg.errors.UniqueViolation as error:
@@ -102,7 +108,7 @@ class AccountRepository:
             row = connection.execute(
                 """
                 SELECT account_id, role, device_id, status, network_policy,
-                    daily_publish_quota, inbox_sync_enabled, display_name,
+                    daily_publish_quota, inbox_sync_enabled, display_name, platform,
                     created_at, updated_at
                 FROM accounts
                 WHERE account_id = %s
@@ -113,17 +119,20 @@ class AccountRepository:
             raise AccountNotFoundError(account_id)
         return _account_from_row(row)
 
-    def list(self) -> list[AccountRecord]:
+    def list(self, *, platform: str | None = None) -> list[AccountRecord]:
+        query = """
+            SELECT account_id, role, device_id, status, network_policy,
+                daily_publish_quota, inbox_sync_enabled, display_name, platform,
+                created_at, updated_at
+            FROM accounts
+        """
+        params: list[Any] = []
+        if platform is not None:
+            query += " WHERE platform = %s"
+            params.append(normalize_platform(platform))
+        query += " ORDER BY account_id"
         with psycopg.connect(self.database_url) as connection:
-            rows = connection.execute(
-                """
-                SELECT account_id, role, device_id, status, network_policy,
-                    daily_publish_quota, inbox_sync_enabled, display_name,
-                    created_at, updated_at
-                FROM accounts
-                ORDER BY account_id
-                """
-            ).fetchall()
+            rows = connection.execute(query, params).fetchall()
         return [_account_from_row(row) for row in rows]
 
     def update(self, account_id: str, **changes: Any) -> AccountRecord:
@@ -134,6 +143,8 @@ class AccountRepository:
             raise ValueError("unsupported account status")
         if "daily_publish_quota" in changes and changes["daily_publish_quota"] < 0:
             raise ValueError("daily_publish_quota must not be negative")
+        if "platform" in changes:
+            changes["platform"] = normalize_platform(changes["platform"])
         if not changes:
             return self.get(account_id)
 
@@ -148,7 +159,7 @@ class AccountRepository:
                         updated_at = CURRENT_TIMESTAMP
                     WHERE account_id = %s
                     RETURNING account_id, role, device_id, status, network_policy,
-                        daily_publish_quota, inbox_sync_enabled, display_name,
+                        daily_publish_quota, inbox_sync_enabled, display_name, platform,
                         created_at, updated_at
                     """,
                     values,
@@ -197,6 +208,7 @@ def _account_from_row(row: tuple) -> AccountRecord:
         daily_publish_quota=row[5],
         inbox_sync_enabled=row[6],
         display_name=row[7],
-        created_at=row[8],
-        updated_at=row[9],
+        platform=row[8],
+        created_at=row[9],
+        updated_at=row[10],
     )

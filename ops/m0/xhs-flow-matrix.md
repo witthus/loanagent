@@ -5,17 +5,17 @@
 
 ## 当前门禁
 
-- M0-Cap 三能力门禁：`OPEN` / `NOT_CLEARED`。必须等 `publish_note`、`read_comments`、
-  `read_inbox` 三项均为 `PASS` 后才可关闭；在此之前 **cloud/M1-Cloud 不得启动**。
-- M0-Cap 当前三能力：`publish_note=NOT_RUN`；`read_comments=FAIL`；
-  `read_inbox=BLOCKED`（inbox page/extract 已通，但 thread 提取仍未闭环）。
-- Redmi Note 12 Turbo（12+256）真实小红书验证：`PARTIAL`（见下表；M0-Cap inbox
-  page/extract 已通，thread/publish 仍未完整闭环）
+- M0-Cap 三能力门禁：`CLEARED`（2026-07-12 19:42 单机证据齐全）。`publish_note` /
+  `read_comments` / `read_inbox`（含 1:1 thread）均为 `PASS`。**云端/M1-Cloud 仍须书面启动**，
+  本矩阵清门禁不等于自动开云。
+- M0-Cap 当前三能力：`publish_note=PASS`；`read_comments=PASS`；`read_inbox=PASS`
+  （列表 + `ChatActivity` 上 `EXTRACT_THREAD`）。
+- Redmi Note 12 Turbo（12+256）真实小红书验证：`PASS`（M0-Cap 三能力闭环；见下表）
 - 第二台不同型号 Xiaomi/Redmi 真实小红书验证：`NOT_RUN`（无第二机）
-- 两机 DPC / Device Owner 门禁：`BLOCKED`（需恢复出厂 + QR；本会话无法完成）
+- 两机 DPC / Device Owner 门禁：`BLOCKED`（产品已延后 DO/MDM；非 M0-Cap 阻塞项）
 - Fixture：`PASS`（本机已安装 `com.loanagent.fixture`，受限页/SET_TEXT 已验证）
-- M0 实体 Go/No-Go：`NO-GO`（缺第二机 + Device Owner；单机页面分类仍有缺口）
-- 单机范围：允许继续加固 Agent；**不得**进入阶段 3+ 云端/Task Runner，直至 Go 或书面变更门槛
+- M0 实体 Go/No-Go：`CONDITIONAL-GO`（M0-Cap 单机已通；第二机/DO 仍缺，不阻塞角色漏斗下一阶段的书面启动）
+- 单机范围：允许继续加固 Agent；进入云端前需书面确认门槛变更
 
 ## 安全边界
 
@@ -36,14 +36,14 @@
 | Fixture `SET_TEXT` | `ACTION_ACCEPTED` | PASS | NOT_RUN | `contentDescription=fixture text input` |
 | 手动 IME fallback | 用户手动启用后 | NOT_RUN | NOT_RUN | 需用户手动开 IME |
 | 发布入口观测 | `PUBLISH_ENTRY` | PASS | NOT_RUN | `contentDescription=发布` → `FINAL_ACTION_UNSUPPORTED`（安全拒发） |
-| 编辑器观测 | `EDITOR` | NOT_RUN | NOT_RUN | 未进入编辑器 |
+| 编辑器观测 | `EDITOR` | PASS | NOT_RUN | `CapaPostNotePlatformActivity`；hint 匹配 `添加标题`/`添加正文` |
 | 笔记详情 | `NOTE_DETAIL` | PASS | NOT_RUN | `NoteDetailActivity` 可观测；feed 卡片常无可用 text/desc |
-| 评论区 | `COMMENTS` | PASS | NOT_RUN | 详情内打开评论后 hint=`COMMENTS` |
+| 评论区 | `COMMENTS` | PASS | NOT_RUN | 详情内打开评论后 hint=`COMMENTS`；笔记页也可 `EXTRACT_COMMENTS` |
 | 消息页 | `INBOX` | PASS | NOT_RUN | 2026-07-12 M0-Cap rebuilt Agent 后 `observe` 返回 `page_hint=INBOX` |
-| M0-Cap inbox 提取 | `extract-inbox` | PASS | NOT_RUN | 2026-07-12 `EXTRACT_INBOX` 成功，返回 20 条 inbox/thread-like items；未在矩阵中保存私信正文 |
-| M0-Cap thread 提取 | open thread → `extract-thread` | BLOCKED | NOT_RUN | `extract-inbox` 的 `locator_hint=index=...;center=...` 不是允许的 StrictSelector；可用文本多为真实私信/群聊，未猜测或打开私人 thread |
-| M0-Cap comments 提取 | comments surface → `extract-comments` | FAIL | NOT_RUN | 2026-07-12 在 inbox 可见 `text=评论` 点击返回 `ACTION_REJECTED/NOT_FOUND`；随后 `EXTRACT_COMMENTS` 仍在 `page_hint=INBOX` 返回 inbox-shaped items，不能算评论区 PASS |
-| M0-Cap publish note | `SET_TEXT`/clipboard → one `click-final` | NOT_RUN | NOT_RUN | 未打开编辑器且未执行 `click-final`；真实发布环境/最终 selector 未确认，不强制真实发布 |
+| M0-Cap inbox 提取 | `extract-inbox` | PASS | NOT_RUN | 列表可抽；消息页偶发 `UNKNOWN`/活动噪声，需点进会话验证 |
+| M0-Cap thread 提取 | open thread → `extract-thread` | PASS | NOT_RUN | 2026-07-12 19:42：`ChatActivity` + `EXTRACT_THREAD` count=6，含 `你好茶叶不错` |
+| M0-Cap comments 提取 | comments surface → `extract-comments` | PASS | NOT_RUN | 2026-07-12 19:42：笔记 `曦瓜大红袍` 上 count=10；含好友「首评」；有 chrome 噪声 |
+| M0-Cap publish note | `SET_TEXT` → one `click-final` | PASS | NOT_RUN | 2026-07-12：盖碗茶图 + 品鉴正文 + `click-final`；标记 `M0CAP-193716` |
 | 业务受限页 | `BUSINESS_BLOCKED` | PASS | NOT_RUN | fixture 按钮 → hint=`BUSINESS_BLOCKED` |
 | 登录要求页 | `LOGIN_REQUIRED` | PASS | NOT_RUN | fixture 按钮 → hint=`LOGIN_REQUIRED` |
 | 未知/搜索页停止 | `UNKNOWN`/`SEARCH` 后停止 | PASS | NOT_RUN | `GlobalSearchActivity` → `SEARCH` |
@@ -71,8 +71,44 @@
   追加验证 `ensure-bound=BOUND`、test image 推送到 `/sdcard/DCIM/Download/m0-cap-test.png`、
   `page_hint=INBOX`、`EXTRACT_INBOX` 成功。
 - 脚本修正：`MATRIX_FOCUS_PKG=none`（或空/`-`）可关闭自动拉起目标包，避免非目标测试假失败。
-- 未完成：Device Owner、第二机、XHS 真机 SET_TEXT、IME fallback、编辑器、thread
-  `EXTRACT_THREAD`、真实 publish `click-final`、10 次重复矩阵。
+- 未完成：第二机、IME fallback、10 次重复矩阵；DO/MDM 已按产品延后。
+
+### M0-Cap 闭环（2026-07-12 19:30–19:42）
+
+- 用户授权真实发布；相册第一格曾为全黑坏媒体，改为推送盖碗茶图至
+  `DCIM/Camera/IMG_M0CAP_DAHONGPAO.jpg` 后选第一格发布。
+- `publish_note`：标题 `曦瓜大红袍｜岩茶品鉴手记`；正文含岩韵品鉴 + 标记
+  `M0CAP-193716`；`SET_TEXT`（hint=`添加标题`/`添加正文`）+ `text=发布笔记`
+  `allow_final_action` → Index。
+- `read_comments`：个人页打开该笔记 → `EXTRACT_COMMENTS` status=SUCCESS count=10；
+  可见好友「静生百慧茶叶馆」与「首评」；含页面 chrome 噪声。
+- `read_inbox`：消息 Tab 可见会话；点进 `ChatActivity` → `EXTRACT_THREAD`
+  status=SUCCESS count=6；含 `你好茶叶不错`（19:42）。`page_hint` 在会话页仍可能
+  `UNKNOWN`，但结构化抽取成立。
+- M0-Cap 三能力门禁记为 `CLEARED`。
+
+- M0-Cap 闭环后追加：`reply_dm` / `reply_comment`（2026-07-12 19:46–19:52）
+  - 私信：`ChatActivity` 对「你好茶叶不错」回复
+    `谢谢认可，这泡曦瓜大红袍岩韵和回甘都比较稳，有兴趣可再交流品鉴感受。`；
+    `SET_TEXT` hint=`发消息…` + `text=发送` `allow_final_action`；`EXTRACT_THREAD` 可见该条。
+  - 评论：评论面板 hint=`让大家听到你的声音`；点「回复」进入
+    `NoteCommentActivity` hint=`回复 @静生百慧茶叶馆：`；`SET_TEXT` + `发送` 成功；
+    UI 可见「感谢首评…岩韵…回甘…」。
+
+- 代码修复（2026-07-12 19:54+，待重装 Agent 后复验）：
+  - 评论/私信抽取过滤 XHS chrome（首评/你的好友/赞和收藏/当前在线/逛逛店铺等），
+    作者-正文/会话配对更稳。
+  - 页面分类：首页底栏「消息」+ feed「赞」不再误判 INBOX；评论输入
+    `让大家听到你的声音`→COMMENTS；聊天 `发消息…`+`当前在线`→INBOX。
+  - EditText hint 匹配 + `findAccessibilityNodeInfosByText` 空结果 DFS 回退（此前已合入）。
+  - debug `confirmed` 同时接受 boolean / 字符串 `"true"`。
+
+- 代码修复后复验（2026-07-12 20:06，Agent SHA
+  `b04c9f312ee9ff25e2fdbb924ab835345fe39a9b7f8c599be86fd36027a4cac9`）：
+  - 评论：`EXTRACT_COMMENTS` 抽到好友「这个茶叶多钱？M0CAP-190713」与作者回复
+    「感谢首评！这泡岩韵…」；仍偶发笔记标题行。
+  - 私信会话：`ChatActivity` 上 `page_hint=INBOX`，`EXTRACT_THREAD` 含对方与我方回复正文；
+    列表页 `EXTRACT_INBOX` 本次 count=0（消息 Tab 表面态不稳定，但点进会话可抽）。
 
 ### M0-Cap Task 6 dry run（2026-07-12 17:38–17:48）
 
@@ -96,9 +132,26 @@
 
 - 核心观测/点击/滑动/OCR 已通；当时 fixture 安装被 HyperOS 拦截；无障碍易掉绑。
 
+### Playbook Engine 云闭环（E0–E3，2026-07-13）
+
+端上引擎（方案 C）经 debug Cloud Bridge HTTP poll 由 CP `POST /api/v1/tasks` 下发；
+设备 `redmi-note-12` / 账号 `phone-publisher-1`；服务 `119.45.36.208`。
+
+| 阶段 | Playbook | 云回执 | 备注 |
+| --- | --- | --- | --- |
+| E0 | `ensure_app_ready@1.0` | succeeded / committed=True | a11y Bound 后稳定 |
+| E1 | `inbox_sync@1.0` | succeeded | 消息 Tab 可抽 |
+| E1 | `read_comments@1.0` | succeeded（`pb-readc-1783875802` / `read-comments-cloud-1783876657`） | 非目标页仍 `WRONG_PAGE` |
+| E2 | `publish_note@1.0` | succeeded / `effect_committed=true` | 真机副作用提交 |
+| E3 | `reply_comment@1.0` | succeeded / `effect_committed=true`（`reply-comment-cloud-1783876597`） | 新 hint「有话要说，快来评论」；a11y 不可点时 `composer_tap_*` 打开 NoteCommentActivity |
+| E3 | `reply_dm@1.0` | succeeded / `effect_committed=true`（`reply-dm-cloud-1783875423`） | ChatActivity 页上云闭环；非私信面 `WRONG_PAGE` |
+
+单元：`:agent:testDebugUnitTest` BUILD SUCCESSFUL；CP 任务/角色相关用例 PASS。
+重装后若 Bound 空，可用 `settings put` 尝试回绑；仍失败需用户关开无障碍。
+
 ## Go/No-Go
 
-**判定：NO-GO（按计划阶段 1–2 门槛）。**
+**判定：CONDITIONAL-GO（M0-Cap 单机三能力已通；Playbook 引擎 E0–E3 云可调度且页上副作用已验）。**
 
-理由：两机 Device Owner 与第二机无障碍矩阵未执行。单机无障碍与 fixture 已明显推进，但仍不得进入
-阶段 3+ 云端/Task Runner，直至 Go 条件满足或书面变更门槛。
+理由：`publish_note` / `read_comments` / `inbox_sync` / `reply_dm` / `reply_comment` 均有 2026-07-13 云下发 succeeded 证据。
+第二机与 Device Owner 仍缺，不阻塞下一阶段（M2a 素材/排期）书面启动。

@@ -9,6 +9,7 @@ from uuid import uuid4
 import psycopg
 from psycopg.types.json import Jsonb
 
+from loanagent.devices import DeviceRepository
 from loanagent.roles import AccountRole, playbook_allowed_for_role, playbook_base
 
 
@@ -23,7 +24,12 @@ READONLY_PLAYBOOKS = {
     "inbox_sync",
     "inbox_open_thread",
 }
-NON_IDEMPOTENT_PLAYBOOKS = {"publish_note"}
+NON_IDEMPOTENT_PLAYBOOKS = {
+    "publish_note",
+    "post_comment",
+    "reply_comment",
+    "reply_dm",
+}
 
 
 class MqttBus(Protocol):
@@ -71,6 +77,10 @@ class TaskDeviceUnavailableError(Exception):
     pass
 
 
+class TaskAccessibilityDownError(Exception):
+    pass
+
+
 class TaskDispatchError(Exception):
     def __init__(self, task_id: str) -> None:
         super().__init__(task_id)
@@ -86,9 +96,15 @@ class ReadonlyTaskRequiredError(Exception):
 
 
 class TaskService:
-    def __init__(self, database_url: str, mqtt_bus: MqttBus) -> None:
+    def __init__(
+        self,
+        database_url: str,
+        mqtt_bus: MqttBus,
+        engagement_service: Any | None = None,
+    ) -> None:
         self.database_url = database_url
         self.mqtt_bus = mqtt_bus
+        self.engagement_service = engagement_service
 
     def create_and_dispatch(
         self,
@@ -128,6 +144,34 @@ class TaskService:
             raise TaskDispatchError(task_id) from error
         return self._update_status(task_id, status="accepted")
 
+    def pending_commands_for_device(self, device_id: str) -> list[dict[str, Any]]:
+        """HTTP fallback for devices that cannot reach the MQTT broker (port filters).
+
+        First successful poll transitions matching tasks from accepted → executing
+        so ops can see delivery progress; envelopes still carry the command payload.
+        """
+        with psycopg.connect(self.database_url) as connection:
+            rows = connection.execute(
+                """
+                UPDATE tasks
+                SET status = 'executing',
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE task_id IN (
+                    SELECT task_id
+                    FROM tasks
+                    WHERE device_id = %s AND status = 'accepted'
+                    ORDER BY created_at, task_id
+                    LIMIT 20
+                    FOR UPDATE
+                )
+                RETURNING task_id, operation_id, device_id, account_id, playbook, params,
+                    effect_class, effect_committed, status, reconcile_required, priority,
+                    timeout_sec, source, error_code, created_at, updated_at
+                """,
+                (device_id,),
+            ).fetchall()
+        return [task_command_envelope(_task_from_row(row)) for row in rows]
+
     def list(
         self,
         *,
@@ -161,7 +205,56 @@ class TaskService:
             ).fetchall()
         return [_task_from_row(row) for row in rows]
 
+    def get(self, task_id: str) -> TaskRecord:
+        with psycopg.connect(self.database_url) as connection:
+            row = connection.execute(
+                """
+                SELECT task_id, operation_id, device_id, account_id, playbook, params,
+                    effect_class, effect_committed, status, reconcile_required, priority,
+                    timeout_sec, source, error_code, created_at, updated_at
+                FROM tasks
+                WHERE task_id = %s
+                """,
+                (task_id,),
+            ).fetchone()
+        if row is None:
+            raise TaskNotFoundError(task_id)
+        return _task_from_row(row)
+
     def mark_readonly_succeeded_from_event(self, *, device_id: str, task_id: str) -> TaskRecord:
+        return self.mark_from_event(
+            device_id=device_id,
+            task_id=task_id,
+            status="succeeded",
+            error_code=None,
+        )
+
+    def mark_readonly_from_event(
+        self,
+        *,
+        device_id: str,
+        task_id: str,
+        status: str,
+        error_code: str | None = None,
+    ) -> TaskRecord:
+        return self.mark_from_event(
+            device_id=device_id,
+            task_id=task_id,
+            status=status,
+            error_code=error_code,
+        )
+
+    def mark_from_event(
+        self,
+        *,
+        device_id: str,
+        task_id: str,
+        status: str,
+        error_code: str | None = None,
+        result_payload: dict[str, Any] | None = None,
+    ) -> TaskRecord:
+        if status not in {"succeeded", "failed"}:
+            raise ValueError(f"unsupported event status: {status}")
         with psycopg.connect(self.database_url) as connection:
             row = connection.execute(
                 """
@@ -175,29 +268,97 @@ class TaskService:
             ).fetchone()
             if row is None:
                 raise TaskNotFoundError(task_id)
-            task = _task_from_row(row)
-            if task.effect_class != "readonly":
-                raise ReadonlyTaskRequiredError(task_id)
+            effect_committed = status == "succeeded"
             updated = connection.execute(
                 """
                 UPDATE tasks
-                SET status = 'succeeded',
-                    effect_committed = TRUE,
+                SET status = %s,
+                    effect_committed = %s,
+                    error_code = %s,
                     updated_at = CURRENT_TIMESTAMP
                 WHERE task_id = %s
                 RETURNING task_id, operation_id, device_id, account_id, playbook, params,
                     effect_class, effect_committed, status, reconcile_required, priority,
                     timeout_sec, source, error_code, created_at, updated_at
                 """,
-                (task_id,),
+                (status, effect_committed, error_code, task_id),
             ).fetchone()
-        return _task_from_row(updated)
+        updated_task = _task_from_row(updated)
+        self._notify_engagement(updated_task, status=status, error_code=error_code)
+        if status == "succeeded" and result_payload:
+            self._ingest_result_payload(updated_task, result_payload)
+        return updated_task
+
+    def _notify_engagement(
+        self,
+        task: TaskRecord,
+        *,
+        status: str,
+        error_code: str | None,
+    ) -> None:
+        engagement = self.engagement_service
+        if engagement is None:
+            # Lazy import avoids cycles when EngagementService is constructed later.
+            from loanagent.engagement import EngagementService
+
+            engagement = EngagementService(self.database_url, self)
+        engagement.on_task_event(task, status=status, error_code=error_code)
+
+    def _ingest_result_payload(
+        self,
+        task: TaskRecord,
+        result_payload: Mapping[str, Any],
+    ) -> None:
+        kind = result_payload.get("kind")
+        if kind == "comments":
+            from loanagent.notes import NotesService
+
+            NotesService(self.database_url, self).upsert_comments_from_payload(
+                account_id=task.account_id,
+                source_task_id=task.task_id,
+                payload=result_payload,
+            )
+            return
+        if kind == "inbox":
+            from loanagent.inbox import InboxService
+
+            threads = list(result_payload.get("threads") or [])
+            if threads:
+                InboxService(self.database_url, self).ingest(task.account_id, threads)
+            return
+        if kind == "thread":
+            from loanagent.inbox import InboxService, InboxThreadNotFoundError
+
+            inbox = InboxService(self.database_url, self)
+            thread_id = result_payload.get("thread_id")
+            messages = list(
+                result_payload.get("messages") or result_payload.get("items") or []
+            )
+            if thread_id and messages:
+                try:
+                    inbox.add_messages(str(thread_id), messages)
+                except InboxThreadNotFoundError:
+                    pass
+                return
+            threads = list(result_payload.get("threads") or [])
+            if threads:
+                inbox.ingest(task.account_id, threads)
+            return
+        if kind == "publish":
+            from loanagent.notes import NotesService
+
+            NotesService(self.database_url, self).create_from_publish_event(
+                task,
+                result_payload,
+            )
 
     def _resolve_dispatch_target(self, account_id: str, playbook: str) -> str:
+        DeviceRepository(self.database_url).mark_stale_offline()
         with psycopg.connect(self.database_url) as connection:
             row = connection.execute(
                 """
-                SELECT accounts.role, accounts.device_id, accounts.status, devices.online
+                SELECT accounts.role, accounts.device_id, accounts.status,
+                    devices.online, devices.a11y_bound
                 FROM accounts
                 LEFT JOIN devices ON devices.device_id = accounts.device_id
                 WHERE accounts.account_id = %s
@@ -210,12 +371,15 @@ class TaskService:
         device_id = row[1]
         account_status = row[2]
         device_online = row[3]
+        a11y_bound = row[4]
         if not playbook_allowed_for_role(role, playbook):
             raise PlaybookForbiddenError(playbook)
         if account_status != "active":
             raise TaskAccountUnavailableError(account_id)
         if device_id is None or device_online is not True:
             raise TaskDeviceUnavailableError(account_id)
+        if a11y_bound is not True:
+            raise TaskAccessibilityDownError(device_id)
         return device_id
 
     def _insert_queued_task(

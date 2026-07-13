@@ -1,0 +1,37 @@
+FROM docker.m.daocloud.io/library/node:22.14.0-bookworm-slim AS ops-web-build
+WORKDIR /workspace/ops-web
+ENV npm_config_registry=https://registry.npmmirror.com
+COPY ops-web/package.json ops-web/package-lock.json ./
+RUN npm ci
+COPY ops-web/ ./
+RUN npm run build
+
+FROM docker.m.daocloud.io/library/python:3.12.11-slim-bookworm AS runtime
+
+ARG APP_UID=10001
+ARG APP_GID=10001
+ENV PATH=/app/.venv/bin:${PATH} \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple/ \
+    PIP_TRUSTED_HOST=mirrors.aliyun.com \
+    PIP_DEFAULT_TIMEOUT=120 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    OPS_WEB_DIST=/app/static/ops-web
+
+RUN groupadd --gid "${APP_GID}" loanagent \
+    && useradd --uid "${APP_UID}" --gid "${APP_GID}" --create-home loanagent \
+    && python -m venv /app/.venv \
+    && chown -R loanagent:loanagent /app
+
+WORKDIR /app
+COPY control-plane/requirements.server.txt /tmp/requirements.server.txt
+RUN /app/.venv/bin/pip install --no-cache-dir -r /tmp/requirements.server.txt \
+    && rm /tmp/requirements.server.txt
+
+COPY --chown=loanagent:loanagent control-plane/src ./src
+COPY --from=ops-web-build --chown=loanagent:loanagent /workspace/ops-web/dist /app/static/ops-web
+
+USER loanagent:loanagent
+EXPOSE 8000
+CMD ["uvicorn", "loanagent.main:app", "--app-dir", "/app/src", "--host", "0.0.0.0", "--port", "8000"]

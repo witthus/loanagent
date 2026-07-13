@@ -1,0 +1,27 @@
+---
+description: Require all development and build tools to run in project Docker containers
+alwaysApply: true
+---
+
+# Docker-Only Development Environment
+
+- Run all development, build, test, lint, formatting, migration, and code-generation commands inside project Docker containers.
+- Do not install language runtimes, SDKs, package managers, databases, brokers, or build tools on the host machine.
+- Do not use host tools such as `brew`, `pip install`, `npm install`, Gradle, Android SDK, `uv`, or database clients for project work.
+- Host commands are limited to Docker/Docker Compose, Git, and basic repository inspection.
+- Define required tooling in Dockerfiles and invoke it through `docker compose run`, `docker compose exec`, or documented wrapper scripts.
+- If a required container does not exist, add or update the project Docker configuration instead of installing the tool locally.
+- Keep dependency versions reproducible through lockfiles and pinned container image versions.
+
+## Examples
+
+```bash
+# Correct
+docker compose run --rm control-plane uv run pytest
+docker compose run --rm android ./gradlew test
+
+# Incorrect
+uv run pytest
+./gradlew test
+brew install android-platform-tools
+```

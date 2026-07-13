@@ -1,10 +1,13 @@
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import asdict
+from pathlib import Path
 from typing import Literal
 import os
 
 from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 
 from loanagent.accounts import (
@@ -15,15 +18,25 @@ from loanagent.accounts import (
     AccountRepository,
 )
 from loanagent.auth import require_device, require_ops
+from loanagent.content import ContentRepository
+from loanagent.content_routes import router as content_router
 from loanagent.db import migrate_fleet_schema
-from loanagent.devices import DeviceRepository
+from loanagent.devices import DeviceNotFoundError, DeviceRepository
+from loanagent.engagement import EngagementService
+from loanagent.engagement_routes import router as engagement_router
 from loanagent.enrollment import (
     DeviceIdentity,
     EnrollmentConsumeStatus,
     EnrollmentRepository,
 )
+from loanagent.inbox import InboxService
+from loanagent.inbox_routes import router as inbox_router
+from loanagent.media import MediaRepository
 from loanagent.mqtt_bus import MqttCommandBus
+from loanagent.notes import NotesService
+from loanagent.notes_routes import router as notes_router
 from loanagent.roles import AccountRole
+from loanagent.schedules import ScheduleRepository
 from loanagent.task_routes import router as task_router
 from loanagent.tasks import TaskService
 from loanagent.web.routes import router as ops_web_router
@@ -38,10 +51,32 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
     application.state.enrollment_repository = enrollment_repository
     application.state.device_repository = DeviceRepository(database_url)
     application.state.account_repository = AccountRepository(database_url)
-    application.state.task_service = TaskService(
+    task_service = TaskService(
         database_url,
         MqttCommandBus(os.environ.get("MQTT_URL", "mqtt://localhost:1883")),
     )
+    engagement_service = EngagementService(database_url, task_service)
+    task_service.engagement_service = engagement_service
+    inbox_service = InboxService(database_url, task_service)
+    notes_service = NotesService(database_url, task_service)
+    application.state.task_service = task_service
+    application.state.engagement_service = engagement_service
+    application.state.inbox_service = inbox_service
+    application.state.notes_service = notes_service
+    application.state.media_repository = MediaRepository(database_url)
+    application.state.content_repository = ContentRepository(database_url)
+    application.state.schedule_repository = ScheduleRepository(
+        database_url,
+        application.state.task_service,
+        application.state.media_repository,
+        application.state.content_repository,
+    )
+    dist = _ops_web_dist()
+    if dist is not None:
+        assets = dist / "assets"
+        already = any(getattr(route, "name", None) == "ops-web-assets" for route in application.routes)
+        if assets.is_dir() and not already:
+            application.mount("/assets", StaticFiles(directory=assets), name="ops-web-assets")
     yield
 
 
@@ -51,6 +86,10 @@ app = FastAPI(
     lifespan=lifespan,
 )
 app.include_router(task_router)
+app.include_router(content_router)
+app.include_router(engagement_router)
+app.include_router(inbox_router)
+app.include_router(notes_router)
 app.include_router(ops_web_router)
 
 
@@ -92,6 +131,7 @@ class AccountCreatePayload(BaseModel):
     role: AccountRole
     device_id: str | None = Field(default=None, min_length=1, max_length=128)
     display_name: str | None = Field(default=None, min_length=1, max_length=256)
+    platform: str | None = Field(default="xhs", min_length=1, max_length=32)
 
 
 AccountStatusPayload = Literal["active", "paused", "blocked", "needs_login"]
@@ -106,6 +146,7 @@ class AccountPatchPayload(BaseModel):
     daily_publish_quota: int | None = Field(default=None, ge=0)
     inbox_sync_enabled: bool | None = None
     display_name: str | None = Field(default=None, min_length=1, max_length=256)
+    platform: str | None = Field(default=None, min_length=1, max_length=32)
 
 
 @app.post("/enroll")
@@ -166,6 +207,38 @@ def list_devices(request: Request) -> list[dict]:
     return [asdict(device) for device in repository.list()]
 
 
+class DevicePatchPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    manufacturer: str | None = Field(default=None, min_length=1, max_length=128)
+    model: str | None = Field(default=None, min_length=1, max_length=128)
+    online: bool | None = None
+
+
+@app.get("/api/v1/devices/{device_id}", dependencies=[Depends(require_ops)])
+def get_device(device_id: str, request: Request) -> dict:
+    repository: DeviceRepository = request.app.state.device_repository
+    try:
+        return asdict(repository.get(device_id))
+    except DeviceNotFoundError as error:
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "DEVICE_NOT_FOUND", "message": "Device does not exist."},
+        ) from error
+
+
+@app.patch("/api/v1/devices/{device_id}", dependencies=[Depends(require_ops)])
+def patch_device(device_id: str, payload: DevicePatchPayload, request: Request) -> dict:
+    repository: DeviceRepository = request.app.state.device_repository
+    try:
+        return asdict(repository.patch(device_id, **payload.model_dump(exclude_unset=True)))
+    except DeviceNotFoundError as error:
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "DEVICE_NOT_FOUND", "message": "Device does not exist."},
+        ) from error
+
+
 @app.post("/api/v1/accounts", dependencies=[Depends(require_ops)])
 def create_account(payload: AccountCreatePayload, request: Request) -> dict:
     repository: AccountRepository = request.app.state.account_repository
@@ -193,9 +266,12 @@ def create_account(payload: AccountCreatePayload, request: Request) -> dict:
 
 
 @app.get("/api/v1/accounts", dependencies=[Depends(require_ops)])
-def list_accounts(request: Request) -> list[dict]:
+def list_accounts(
+    request: Request,
+    platform: str | None = None,
+) -> list[dict]:
     repository: AccountRepository = request.app.state.account_repository
-    return [asdict(account) for account in repository.list()]
+    return [asdict(account) for account in repository.list(platform=platform)]
 
 
 @app.patch("/api/v1/accounts/{account_id}", dependencies=[Depends(require_ops)])
@@ -258,3 +334,49 @@ def resume_account(account_id: str, request: Request) -> dict:
 
 def _account_http_error(status_code: int, code: str, message: str) -> HTTPException:
     return HTTPException(status_code=status_code, detail={"code": code, "message": message})
+
+
+def _ops_web_dist() -> Path | None:
+    candidates = [
+        Path(os.environ.get("OPS_WEB_DIST", "")),
+        Path("/app/static/ops-web"),
+        Path(__file__).resolve().parents[2] / "static" / "ops-web",
+        Path(__file__).resolve().parents[3] / "ops-web" / "dist",
+    ]
+    for path in candidates:
+        if path and (path / "index.html").is_file():
+            return path
+    return None
+
+
+@app.get("/")
+def spa_root() -> FileResponse:
+    dist = _ops_web_dist()
+    if dist is None:
+        raise HTTPException(status_code=404, detail="SPA not built")
+    return FileResponse(dist / "index.html")
+
+
+@app.get("/login")
+def spa_login() -> FileResponse:
+    dist = _ops_web_dist()
+    if dist is None:
+        raise HTTPException(status_code=404, detail="SPA not built")
+    return FileResponse(dist / "index.html")
+
+
+@app.get("/{full_path:path}")
+def spa_fallback(full_path: str) -> FileResponse:
+    # Never shadow API or infra routes if routing order changes.
+    blocked_prefixes = ("api/", "ops/", "docs", "redoc", "openapi.json", "enroll")
+    if full_path in {"health", "openapi.json", "redoc", "docs"} or full_path.startswith(
+        blocked_prefixes
+    ):
+        raise HTTPException(status_code=404, detail="Not Found")
+    dist = _ops_web_dist()
+    if dist is None:
+        raise HTTPException(status_code=404, detail="SPA not built")
+    candidate = dist / full_path
+    if full_path and candidate.is_file():
+        return FileResponse(candidate)
+    return FileResponse(dist / "index.html")

@@ -1,44 +1,46 @@
 from __future__ import annotations
 
 import os
-from pathlib import Path
 from urllib.parse import parse_qs
 
 from fastapi import APIRouter, Request
-from fastapi.responses import HTMLResponse, RedirectResponse, Response
-from fastapi.templating import Jinja2Templates
-
-from loanagent.accounts import AccountRepository
-from loanagent.devices import DeviceRepository
-from loanagent.tasks import TaskService
+from fastapi.responses import JSONResponse, RedirectResponse, Response
 
 
 router = APIRouter(prefix="/ops")
-templates = Jinja2Templates(directory=Path(__file__).with_name("templates"))
 
 
-@router.get("/login", response_class=HTMLResponse)
-def login_page(request: Request) -> Response:
-    return templates.TemplateResponse(
-        request,
-        "login.html",
-        {"error": None},
-    )
+@router.get("/login")
+def login_page() -> Response:
+    return RedirectResponse("/login", status_code=303)
 
 
-@router.post("/login", response_class=HTMLResponse)
+@router.post("/login")
 async def login_submit(request: Request) -> Response:
     token = _form_value(await request.body(), "token")
     if not _valid_ops_token(token):
-        return templates.TemplateResponse(
-            request,
-            "login.html",
-            {"error": "Invalid ops token"},
-            status_code=401,
-        )
+        return JSONResponse({"ok": False, "error": "Invalid ops token"}, status_code=401)
 
-    response = RedirectResponse("/ops/", status_code=303)
-    # Insecure by design for localhost-only M1 ops: the raw OPS_TOKEN is stored in the cookie.
+    response = RedirectResponse("/", status_code=303)
+    response.set_cookie(
+        "ops_session",
+        token or "",
+        httponly=True,
+        samesite="lax",
+    )
+    return response
+
+
+@router.post("/api/login")
+async def api_login(request: Request) -> Response:
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"ok": False, "error": "令牌不正确"}, status_code=400)
+    token = str(body.get("token") or "")
+    if not _valid_ops_token(token):
+        return JSONResponse({"ok": False, "error": "令牌不正确"}, status_code=401)
+    response = JSONResponse({"ok": True})
     response.set_cookie(
         "ops_session",
         token,
@@ -48,65 +50,61 @@ async def login_submit(request: Request) -> Response:
     return response
 
 
-@router.get("/", response_class=HTMLResponse)
+@router.post("/api/logout")
+async def api_logout() -> Response:
+    response = JSONResponse({"ok": True})
+    response.delete_cookie("ops_session")
+    return response
+
+
+@router.get("/api/session")
+def api_session(request: Request) -> Response:
+    if _valid_ops_token(request.cookies.get("ops_session")):
+        return JSONResponse({"ok": True})
+    return JSONResponse({"ok": False}, status_code=401)
+
+
+@router.get("/")
 def dashboard(request: Request) -> Response:
     redirect = _redirect_if_unauthenticated(request)
     if redirect is not None:
         return redirect
-
-    devices = _device_repository(request).list()
-    accounts = _account_repository(request).list()
-    tasks = _task_service(request).list()
-    return templates.TemplateResponse(
-        request,
-        "dashboard.html",
-        {"devices": devices, "accounts": accounts, "tasks": tasks},
-    )
+    return RedirectResponse("/", status_code=303)
 
 
-@router.get("/devices", response_class=HTMLResponse)
-def devices_page(request: Request) -> Response:
+@router.api_route(
+    "/{path:path}",
+    methods=["GET", "POST"],
+    include_in_schema=False,
+)
+def legacy_ops_pages(path: str, request: Request) -> Response:
+    """Send legacy Jinja URLs into the Vue SPA."""
     redirect = _redirect_if_unauthenticated(request)
     if redirect is not None:
         return redirect
-
-    return templates.TemplateResponse(
-        request,
-        "devices.html",
-        {"devices": _device_repository(request).list()},
-    )
-
-
-@router.get("/accounts", response_class=HTMLResponse)
-def accounts_page(request: Request) -> Response:
-    redirect = _redirect_if_unauthenticated(request)
-    if redirect is not None:
-        return redirect
-
-    return templates.TemplateResponse(
-        request,
-        "accounts.html",
-        {"accounts": _account_repository(request).list()},
-    )
-
-
-@router.get("/tasks", response_class=HTMLResponse)
-def tasks_page(request: Request) -> Response:
-    redirect = _redirect_if_unauthenticated(request)
-    if redirect is not None:
-        return redirect
-
-    return templates.TemplateResponse(
-        request,
-        "tasks.html",
-        {"tasks": _task_service(request).list()},
-    )
+    mapping = {
+        "devices": "/devices",
+        "accounts": "/accounts",
+        "tasks": "/tasks",
+        "content": "/contents",
+        "publish": "/publish",
+        "comments": "/comments",
+        "inbox": "/inbox",
+    }
+    if path.startswith("inbox/"):
+        return RedirectResponse(f"/{path}", status_code=303)
+    target = mapping.get(path.split("/", 1)[0], "/")
+    if path.startswith("comments") or path.startswith("inbox"):
+        # form posts under comments/* or inbox/*
+        root = path.split("/", 1)[0]
+        target = mapping.get(root, "/")
+    return RedirectResponse(target, status_code=303)
 
 
 def _redirect_if_unauthenticated(request: Request) -> RedirectResponse | None:
     if _valid_ops_token(request.cookies.get("ops_session")):
         return None
-    return RedirectResponse("/ops/login", status_code=303)
+    return RedirectResponse("/login", status_code=303)
 
 
 def _valid_ops_token(token: str | None) -> bool:
@@ -118,15 +116,3 @@ def _form_value(body: bytes, key: str) -> str | None:
     values = parse_qs(body.decode("utf-8"), keep_blank_values=True)
     first = values.get(key, [None])[0]
     return first if first else None
-
-
-def _device_repository(request: Request) -> DeviceRepository:
-    return request.app.state.device_repository
-
-
-def _account_repository(request: Request) -> AccountRepository:
-    return request.app.state.account_repository
-
-
-def _task_service(request: Request) -> TaskService:
-    return request.app.state.task_service
