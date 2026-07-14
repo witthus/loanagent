@@ -13,6 +13,7 @@ from loanagent.tasks import (
     TaskAccessibilityDownError,
     TaskAccountNotFoundError,
     TaskAccountUnavailableError,
+    TaskAlreadyTerminalError,
     TaskDispatchError,
     TaskDeviceUnavailableError,
     TaskNotFoundError,
@@ -118,6 +119,25 @@ def get_task(task_id: str, request: Request) -> dict:
             404,
             "TASK_NOT_FOUND",
             "Task does not exist.",
+        ) from error
+    return asdict(task)
+
+
+@router.post("/tasks/{task_id}/cancel", dependencies=[Depends(require_ops)])
+def cancel_task(task_id: str, request: Request) -> dict:
+    try:
+        task = _task_service(request).cancel(task_id)
+    except TaskNotFoundError as error:
+        raise _task_http_error(
+            404,
+            "TASK_NOT_FOUND",
+            "Task does not exist.",
+        ) from error
+    except TaskAlreadyTerminalError as error:
+        raise _task_http_error(
+            409,
+            "TASK_ALREADY_TERMINAL",
+            "Task is already finished and cannot be cancelled.",
         ) from error
     return asdict(task)
 

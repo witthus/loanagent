@@ -324,3 +324,141 @@ def test_device_get_and_patch_routes() -> None:
     assert patched.json()["model"] == "Turbo"
     assert patched.json()["display_name"] == "红米主号机"
     assert missing.status_code == 404
+
+
+def test_delete_device_unbinds_account_and_cancels_open_tasks() -> None:
+    from loanagent.accounts import AccountRepository
+    from loanagent.devices import DeviceRepository
+    from loanagent.tasks import TaskService
+
+    class RecordingMqttBus:
+        def publish(self, topic: str, payload: dict) -> None:
+            return None
+
+    device_id = unique_id("device-del")
+    account_id = unique_id("account-del")
+    devices = DeviceRepository(DATABASE_URL)
+    accounts = AccountRepository(DATABASE_URL)
+    devices.migrate()
+    devices.heartbeat(device_id=device_id, agent_version="0.1.0", a11y_bound=True)
+
+    with TestClient(app) as client:
+        created = client.post(
+            "/api/v1/accounts",
+            headers=ops_headers(),
+            json={
+                "account_id": account_id,
+                "role": "PUBLISHER_MATRIX",
+                "device_id": device_id,
+                "display_name": "待删设备号",
+            },
+        )
+        assert created.status_code == 200
+
+        service = TaskService(DATABASE_URL, RecordingMqttBus())
+        open_task = service._insert_queued_task(
+            task_id=unique_id("task-open"),
+            operation_id=unique_id("op"),
+            device_id=device_id,
+            account_id=account_id,
+            playbook="sync_notes@1.0",
+            params={},
+            effect_class="readonly",
+            priority=100,
+            timeout_sec=120,
+            source="manual",
+        )
+        service._update_status(open_task.task_id, status="accepted")
+
+        cancelled = client.post(
+            f"/api/v1/devices/{device_id}/cancel-tasks",
+            headers=ops_headers(),
+        )
+        assert cancelled.status_code == 200
+        assert cancelled.json()["cancelled_count"] >= 1
+
+        open_task2 = service._insert_queued_task(
+            task_id=unique_id("task-open-2"),
+            operation_id=unique_id("op2"),
+            device_id=device_id,
+            account_id=account_id,
+            playbook="inbox_sync@1.0",
+            params={},
+            effect_class="readonly",
+            priority=100,
+            timeout_sec=120,
+            source="manual",
+        )
+        service._update_status(open_task2.task_id, status="executing")
+
+        deleted = client.delete(
+            f"/api/v1/devices/{device_id}",
+            headers=ops_headers(),
+        )
+        assert deleted.status_code == 200
+        assert deleted.json()["ok"] is True
+
+        unbound = accounts.get(account_id)
+        assert unbound.device_id is None
+
+        missing = client.get(f"/api/v1/devices/{device_id}", headers=ops_headers())
+        assert missing.status_code == 404
+
+        task = client.get(f"/api/v1/tasks/{open_task2.task_id}", headers=ops_headers())
+        assert task.status_code == 200
+        assert task.json()["status"] == "cancelled"
+        assert task.json()["device_id"] is None
+
+
+def test_cancel_task_route_stops_executing_task() -> None:
+    from loanagent.devices import DeviceRepository
+    from loanagent.tasks import TaskService
+
+    class RecordingMqttBus:
+        def publish(self, topic: str, payload: dict) -> None:
+            return None
+
+    device_id = unique_id("device-cancel")
+    account_id = unique_id("account-cancel")
+    DeviceRepository(DATABASE_URL).migrate()
+    DeviceRepository(DATABASE_URL).heartbeat(
+        device_id=device_id,
+        agent_version="0.1.0",
+        a11y_bound=True,
+    )
+    with TestClient(app) as client:
+        client.post(
+            "/api/v1/accounts",
+            headers=ops_headers(),
+            json={
+                "account_id": account_id,
+                "role": "PUBLISHER_MATRIX",
+                "device_id": device_id,
+            },
+        )
+        service = TaskService(DATABASE_URL, RecordingMqttBus())
+        task = service._insert_queued_task(
+            task_id=unique_id("task-cancel"),
+            operation_id=unique_id("op-cancel"),
+            device_id=device_id,
+            account_id=account_id,
+            playbook="sync_notes@1.0",
+            params={},
+            effect_class="readonly",
+            priority=100,
+            timeout_sec=120,
+            source="manual",
+        )
+        service._update_status(task.task_id, status="executing")
+        cancelled = client.post(
+            f"/api/v1/tasks/{task.task_id}/cancel",
+            headers=ops_headers(),
+        )
+        assert cancelled.status_code == 200
+        assert cancelled.json()["status"] == "cancelled"
+        again = client.post(
+            f"/api/v1/tasks/{task.task_id}/cancel",
+            headers=ops_headers(),
+        )
+        assert again.status_code == 409
+        assert again.json()["detail"]["code"] == "TASK_ALREADY_TERMINAL"

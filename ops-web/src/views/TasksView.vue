@@ -28,8 +28,11 @@ const allRows = ref<Task[]>([])
 const accountNames = ref<Record<string, string>>({})
 const expanded = ref<Record<string, boolean>>({})
 const error = ref('')
+const message = ref('')
 const page = ref(1)
+const cancelling = ref<string | null>(null)
 
+const ACTIVE = new Set(['queued', 'accepted', 'executing'])
 const focusTaskId = computed(() => (route.query.task_id as string) || '')
 
 const sortedRows = computed(() =>
@@ -67,6 +70,37 @@ function clearFocus() {
   router.push({ name: 'tasks' })
 }
 
+async function loadTasks() {
+  try {
+    const [tasks, accounts] = await Promise.all([
+      api<Task[]>('/api/v1/tasks'),
+      api<AccountLike[]>('/api/v1/accounts?platform=xhs'),
+    ])
+    allRows.value = tasks
+    accountNames.value = buildAccountNameMap(accounts)
+    if (focusTaskId.value) expanded.value[focusTaskId.value] = true
+    error.value = ''
+  } catch {
+    error.value = '加载任务失败'
+  }
+}
+
+async function cancelTask(taskId: string) {
+  if (!window.confirm('确认取消该进行中的任务？')) return
+  cancelling.value = taskId
+  message.value = ''
+  error.value = ''
+  try {
+    await api(`/api/v1/tasks/${encodeURIComponent(taskId)}/cancel`, { method: 'POST' })
+    message.value = '任务已取消'
+    await loadTasks()
+  } catch {
+    error.value = '取消任务失败（可能已结束）'
+  } finally {
+    cancelling.value = null
+  }
+}
+
 watch(focusTaskId, (id) => {
   page.value = 1
   if (id) expanded.value[id] = true
@@ -76,30 +110,19 @@ watch(totalPages, (n) => {
   if (page.value > n) page.value = n
 })
 
-onMounted(async () => {
-  try {
-    const [tasks, accounts] = await Promise.all([
-      api<Task[]>('/api/v1/tasks'),
-      api<AccountLike[]>('/api/v1/accounts?platform=xhs'),
-    ])
-    allRows.value = tasks
-    accountNames.value = buildAccountNameMap(accounts)
-    if (focusTaskId.value) expanded.value[focusTaskId.value] = true
-  } catch {
-    error.value = '加载任务失败'
-  }
-})
+onMounted(loadTasks)
 </script>
 
 <template>
   <section>
     <h1>任务</h1>
     <p v-if="focusTaskId" class="focus-banner">
-      正在查看单条异常任务
+      正在查看单条任务
       <button type="button" class="link-btn" @click="clearFocus">返回全部任务</button>
     </p>
+    <p v-if="message" class="ok">{{ message }}</p>
     <p v-if="error" class="error">{{ error }}</p>
-    <template v-else>
+    <template v-if="!error || allRows.length">
       <table>
         <thead>
           <tr>
@@ -117,7 +140,16 @@ onMounted(async () => {
               <td>{{ taskStatusLabel(row.status) }}</td>
               <td>{{ playbookLabel(row.playbook) }}</td>
               <td>{{ accountName(row.account_id) }}</td>
-              <td>
+              <td class="actions-cell">
+                <button
+                  v-if="ACTIVE.has(row.status)"
+                  type="button"
+                  class="link-btn"
+                  :disabled="cancelling === row.task_id"
+                  @click="cancelTask(row.task_id)"
+                >
+                  {{ cancelling === row.task_id ? '取消中…' : '取消任务' }}
+                </button>
                 <button
                   v-if="row.error_code"
                   type="button"
@@ -126,7 +158,7 @@ onMounted(async () => {
                 >
                   {{ expanded[row.task_id] ? '收起异常' : '查看异常' }}
                 </button>
-                <span v-else class="ok">正常</span>
+                <span v-else-if="!ACTIVE.has(row.status)" class="ok">正常</span>
               </td>
             </tr>
             <tr v-if="row.error_code && expanded[row.task_id]" class="detail">
@@ -165,6 +197,8 @@ th { background: #f3f4f6; }
   cursor: pointer;
   padding: 0;
 }
+.link-btn:disabled { opacity: 0.6; cursor: default; }
+.actions-cell { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
 .muted { color: #5c6770; margin: 4px 0 0; }
 .ok { color: #067647; }
 .error { color: #b42318; }

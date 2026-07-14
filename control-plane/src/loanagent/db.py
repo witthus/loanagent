@@ -361,6 +361,30 @@ def migrate_fleet_schema(database_url: str) -> None:
             )
             _record_migration(connection, 19)
 
+        if 20 not in applied:
+            # Allow deleting devices that still have historical tasks.
+            connection.execute(
+                """
+                ALTER TABLE tasks
+                ALTER COLUMN device_id DROP NOT NULL
+                """
+            )
+            connection.execute(
+                """
+                ALTER TABLE tasks
+                DROP CONSTRAINT IF EXISTS tasks_device_id_fkey
+                """
+            )
+            connection.execute(
+                """
+                ALTER TABLE tasks
+                ADD CONSTRAINT tasks_device_id_fkey
+                FOREIGN KEY (device_id) REFERENCES devices(device_id)
+                ON DELETE SET NULL
+                """
+            )
+            _record_migration(connection, 20)
+
 
 def _record_migration(connection: psycopg.Connection, version: int) -> None:
     connection.execute(

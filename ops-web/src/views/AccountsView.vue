@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { api } from '@/lib/api'
 import { accountDisplayName, roleLabel } from '@/lib/labels'
 import { humanizeError } from '@/lib/humanize'
@@ -37,6 +37,7 @@ const saving = ref<string | null>(null)
 const message = ref('')
 const bindAccountId = ref('')
 const bindDeviceId = ref('')
+let refreshTimer: ReturnType<typeof setInterval> | null = null
 
 const unboundAccounts = computed(() =>
   allAccounts.value.filter((a) => !a.device_id),
@@ -47,6 +48,16 @@ const unboundDevices = computed(() => {
   )
   return allDevices.value.filter((d) => !used.has(d.device_id))
 })
+
+function isDeviceReady(device: Device | null): boolean {
+  return Boolean(device?.online && device.a11y_bound === true)
+}
+
+function needsBindRecovery(row: Row): boolean {
+  if (!row.device) return false
+  // Bound or unbound device stuck offline / a11y-down during setup.
+  return !isDeviceReady(row.device)
+}
 
 function deviceStatus(device: Device | null): string {
   if (!device) return '未绑定设备'
@@ -62,7 +73,7 @@ function accountLabel(account: Account | null): string {
 
 function deviceLabel(device: Device | null): string {
   if (!device) return '—'
-  return device.display_name?.trim() || '未命名设备'
+  return device.display_name?.trim() || device.device_id
 }
 
 async function load() {
@@ -93,8 +104,8 @@ async function load() {
     if (!bindAccountId.value && unboundAccounts.value[0]) {
       bindAccountId.value = unboundAccounts.value[0].account_id
     }
-    if (!bindDeviceId.value && unboundDevices.value[0]) {
-      bindDeviceId.value = unboundDevices.value[0].device_id
+    if (!bindDeviceId.value || !unboundDevices.value.some((d) => d.device_id === bindDeviceId.value)) {
+      bindDeviceId.value = unboundDevices.value[0]?.device_id || ''
     }
   } catch {
     error.value = '加载账号与设备失败'
@@ -148,6 +159,13 @@ async function bindAccountDevice() {
     error.value = '请选择账号和设备'
     return
   }
+  const device = unboundDevices.value.find((d) => d.device_id === bindDeviceId.value)
+  if (device && !isDeviceReady(device)) {
+    const proceed = window.confirm(
+      '该设备当前不在线或无障碍未开。仍可先绑定，但任务会失败；掉线时可在下方终止任务、解绑或删除设备。是否继续？',
+    )
+    if (!proceed) return
+  }
   saving.value = 'bind'
   message.value = ''
   error.value = ''
@@ -156,7 +174,7 @@ async function bindAccountDevice() {
       method: 'PATCH',
       body: JSON.stringify({ device_id: bindDeviceId.value }),
     })
-    message.value = '账号与设备已绑定'
+    message.value = '账号与设备已绑定。若设备未就绪，可在下方暂停、终止任务或删除后重绑。'
     bindAccountId.value = ''
     bindDeviceId.value = ''
     await load()
@@ -177,7 +195,7 @@ async function unbindAccount(account: Account) {
       method: 'PATCH',
       body: JSON.stringify({ device_id: null }),
     })
-    message.value = '已解除绑定'
+    message.value = '已解除绑定，可重新选择设备绑定'
     await load()
   } catch {
     error.value = '解除绑定失败'
@@ -186,13 +204,102 @@ async function unbindAccount(account: Account) {
   }
 }
 
-onMounted(load)
+async function pauseAccount(account: Account) {
+  if (!window.confirm(`暂停「${accountDisplayName(account)}」？暂停后不会再下发新任务。`)) return
+  saving.value = `pause:${account.account_id}`
+  message.value = ''
+  error.value = ''
+  try {
+    await api(`/api/v1/accounts/${encodeURIComponent(account.account_id)}/pause`, {
+      method: 'POST',
+    })
+    message.value = '账号已暂停'
+    await load()
+  } catch {
+    error.value = '暂停账号失败'
+  } finally {
+    saving.value = null
+  }
+}
+
+async function resumeAccount(account: Account) {
+  saving.value = `resume:${account.account_id}`
+  message.value = ''
+  error.value = ''
+  try {
+    await api(`/api/v1/accounts/${encodeURIComponent(account.account_id)}/resume`, {
+      method: 'POST',
+    })
+    message.value = '账号已恢复'
+    await load()
+  } catch {
+    error.value = '恢复账号失败'
+  } finally {
+    saving.value = null
+  }
+}
+
+async function cancelDeviceTasks(device: Device) {
+  if (!window.confirm(`终止设备「${deviceLabel(device)}」上所有进行中的任务？`)) return
+  saving.value = `cancel:${device.device_id}`
+  message.value = ''
+  error.value = ''
+  try {
+    const result = await api<{ cancelled_count: number }>(
+      `/api/v1/devices/${encodeURIComponent(device.device_id)}/cancel-tasks`,
+      { method: 'POST' },
+    )
+    message.value = `已终止 ${result.cancelled_count} 个进行中的任务`
+    await load()
+  } catch {
+    error.value = '终止任务失败'
+  } finally {
+    saving.value = null
+  }
+}
+
+async function deleteDevice(device: Device, account: Account | null) {
+  const label = deviceLabel(device)
+  const boundHint = account
+    ? `将同时解除与「${accountDisplayName(account)}」的绑定，并终止进行中任务。`
+    : '将终止该设备进行中的任务。'
+  if (!window.confirm(`删除设备「${label}」？\n${boundHint}\n删除后可重新安装 Agent 并绑定。`)) {
+    return
+  }
+  saving.value = `delete:${device.device_id}`
+  message.value = ''
+  error.value = ''
+  try {
+    await api(`/api/v1/devices/${encodeURIComponent(device.device_id)}`, {
+      method: 'DELETE',
+    })
+    message.value = '设备已删除，可重新上线后绑定'
+    await load()
+  } catch {
+    error.value = '删除设备失败'
+  } finally {
+    saving.value = null
+  }
+}
+
+onMounted(() => {
+  void load()
+  refreshTimer = setInterval(() => {
+    if (rows.value.some((row) => needsBindRecovery(row))) void load()
+  }, 8000)
+})
+
+onUnmounted(() => {
+  if (refreshTimer) clearInterval(refreshTimer)
+})
 </script>
 
 <template>
   <section>
     <h1>账号与设备</h1>
-    <p class="hint">一台手机绑定一个账号。可在这里改显示名称，或绑定/解绑设备。</p>
+    <p class="hint">
+      一台手机绑定一个账号。绑定后若掉线，可暂停账号、终止任务、解绑或删除设备后重新绑定。
+    </p>
     <p v-if="message" class="ok">{{ message }}</p>
     <p v-if="error" class="error">{{ error }}</p>
 
@@ -212,12 +319,20 @@ onMounted(load)
           <select v-model="bindDeviceId">
             <option v-for="d in unboundDevices" :key="d.device_id" :value="d.device_id">
               {{ d.display_name?.trim() || d.device_id }}
-              {{ d.online ? '（在线）' : '（离线）' }}
+              {{ isDeviceReady(d) ? '（就绪）' : d.online ? '（无障碍未开）' : '（离线）' }}
             </option>
           </select>
         </label>
         <button type="button" :disabled="saving === 'bind'" @click="bindAccountDevice">
-          {{ saving === 'bind' ? '绑定中…' : '绑定' }}
+          {{ saving === 'bind' ? '提交中…' : '绑定' }}
+        </button>
+        <button
+          v-if="saving === 'bind'"
+          type="button"
+          class="ghost"
+          @click="saving = null"
+        >
+          取消等待
         </button>
       </div>
     </div>
@@ -235,50 +350,119 @@ onMounted(load)
         </tr>
       </thead>
       <tbody>
-        <tr v-for="(row, index) in rows" :key="row.account?.account_id || row.device?.device_id || index">
-          <td>{{ accountLabel(row.account) }}</td>
-          <td>{{ row.account ? roleLabel(row.account.role) : '—' }}</td>
-          <td>{{ row.account ? platformLabel(row.account.platform || 'xhs') : '—' }}</td>
-          <td>
-            <div>{{ deviceLabel(row.device) }}</div>
-          </td>
-          <td>{{ deviceStatus(row.device) }}</td>
-          <td>
-            {{
-              row.device?.a11y_bound === true
-                ? '已就绪'
-                : row.device?.a11y_bound === false
-                  ? '未就绪'
-                  : '—'
-            }}
-          </td>
-          <td class="actions">
-            <button
-              v-if="row.account"
-              type="button"
-              :disabled="saving === `account:${row.account.account_id}`"
-              @click="renameAccount(row.account)"
-            >
-              改账号名
-            </button>
-            <button
-              v-if="row.device"
-              type="button"
-              :disabled="saving === `device:${row.device.device_id}`"
-              @click="renameDevice(row.device)"
-            >
-              改设备名
-            </button>
-            <button
-              v-if="row.account?.device_id"
-              type="button"
-              :disabled="saving === `unbind:${row.account.account_id}`"
-              @click="unbindAccount(row.account)"
-            >
-              解绑
-            </button>
-          </td>
-        </tr>
+        <template v-for="(row, index) in rows" :key="row.account?.account_id || row.device?.device_id || index">
+          <tr>
+            <td>
+              <div>{{ accountLabel(row.account) }}</div>
+              <div v-if="row.account?.status === 'paused'" class="badge">已暂停</div>
+            </td>
+            <td>{{ row.account ? roleLabel(row.account.role) : '—' }}</td>
+            <td>{{ row.account ? platformLabel(row.account.platform || 'xhs') : '—' }}</td>
+            <td>
+              <div>{{ deviceLabel(row.device) }}</div>
+            </td>
+            <td>{{ deviceStatus(row.device) }}</td>
+            <td>
+              {{
+                row.device?.a11y_bound === true
+                  ? '已就绪'
+                  : row.device?.a11y_bound === false
+                    ? '未就绪'
+                    : '—'
+              }}
+            </td>
+            <td class="actions">
+              <button
+                v-if="row.account"
+                type="button"
+                :disabled="saving === `account:${row.account.account_id}`"
+                @click="renameAccount(row.account)"
+              >
+                改账号名
+              </button>
+              <button
+                v-if="row.device"
+                type="button"
+                :disabled="saving === `device:${row.device.device_id}`"
+                @click="renameDevice(row.device)"
+              >
+                改设备名
+              </button>
+              <button
+                v-if="row.account?.device_id"
+                type="button"
+                :disabled="saving === `unbind:${row.account.account_id}`"
+                @click="unbindAccount(row.account)"
+              >
+                解绑
+              </button>
+              <button
+                v-if="row.device"
+                type="button"
+                class="danger"
+                :disabled="saving === `delete:${row.device.device_id}`"
+                @click="deleteDevice(row.device, row.account)"
+              >
+                删除设备
+              </button>
+            </td>
+          </tr>
+          <tr v-if="row.device && needsBindRecovery({ account: row.account, device: row.device })" class="recovery">
+            <td colspan="7">
+              <div class="recovery-box">
+                <strong>设备未就绪</strong>
+                <span>
+                  {{
+                    row.device.online
+                      ? '无障碍未开，绑定/任务可能卡住。'
+                      : '手机已掉线。可暂停账号、终止进行中任务，或删除设备后重新绑定。'
+                  }}
+                </span>
+                <div class="actions">
+                  <button
+                    v-if="row.account && row.account.status === 'active'"
+                    type="button"
+                    :disabled="saving === `pause:${row.account.account_id}`"
+                    @click="pauseAccount(row.account)"
+                  >
+                    暂停账号
+                  </button>
+                  <button
+                    v-if="row.account && row.account.status === 'paused'"
+                    type="button"
+                    :disabled="saving === `resume:${row.account.account_id}`"
+                    @click="resumeAccount(row.account)"
+                  >
+                    恢复账号
+                  </button>
+                  <button
+                    type="button"
+                    :disabled="saving === `cancel:${row.device.device_id}`"
+                    @click="cancelDeviceTasks(row.device)"
+                  >
+                    终止进行中任务
+                  </button>
+                  <button
+                    v-if="row.account?.device_id"
+                    type="button"
+                    :disabled="saving === `unbind:${row.account.account_id}`"
+                    @click="unbindAccount(row.account)"
+                  >
+                    解绑重来
+                  </button>
+                  <button
+                    type="button"
+                    class="danger"
+                    :disabled="saving === `delete:${row.device.device_id}`"
+                    @click="deleteDevice(row.device, row.account)"
+                  >
+                    删除设备并重绑
+                  </button>
+                </div>
+              </div>
+            </td>
+          </tr>
+        </template>
       </tbody>
     </table>
   </section>
@@ -291,25 +475,46 @@ th { background: #f3f4f6; }
 .error { color: #b42318; }
 .ok { color: #067647; }
 .hint { color: #5c6770; margin: 0 0 12px; }
+.badge {
+  display: inline-block;
+  margin-top: 4px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: #fff7ed;
+  color: #b54708;
+  font-size: 0.8rem;
+  font-weight: 600;
+}
 .bind-panel {
   background: #fff;
   border-radius: 12px;
   padding: 16px 18px;
   margin-bottom: 16px;
-  max-width: 720px;
+  max-width: 820px;
 }
 .bind-panel h2 { margin: 0 0 12px; font-size: 1rem; }
 .bind-row { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end; }
 .bind-row label { display: flex; flex-direction: column; gap: 6px; font-weight: 600; min-width: 180px; }
-.bind-row select, .bind-row button { padding: 8px 12px; border-radius: 8px; font: inherit; }
+.bind-row select, .bind-row button, .actions button { padding: 8px 12px; border-radius: 8px; font: inherit; }
 .bind-row button { background: #2d6a4f; color: #fff; border: 0; font-weight: 600; cursor: pointer; }
-.actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.bind-row button.ghost,
 .actions button {
   border: 1px solid #d0d5dd;
   background: #fff;
-  border-radius: 8px;
-  padding: 6px 10px;
+  color: #1f2329;
+  font-weight: 600;
   cursor: pointer;
 }
+.actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .actions button:disabled { opacity: 0.6; cursor: default; }
+.actions button.danger { color: #b42318; border-color: #fecdca; }
+.recovery td { background: #fff7ed; border-bottom: 1px solid #fdba74; }
+.recovery-box {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.recovery-box strong { color: #b54708; }
+.recovery-box span { color: #5c6770; }
+.recovery-box .actions { margin-top: 2px; }
 </style>

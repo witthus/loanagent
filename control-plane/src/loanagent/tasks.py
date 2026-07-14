@@ -42,7 +42,7 @@ class MqttBus(Protocol):
 class TaskRecord:
     task_id: str
     operation_id: str
-    device_id: str
+    device_id: str | None
     account_id: str
     playbook: str
     params: dict[str, Any]
@@ -63,6 +63,10 @@ class DuplicateTaskError(Exception):
 
 
 class TaskNotFoundError(Exception):
+    pass
+
+
+class TaskAlreadyTerminalError(Exception):
     pass
 
 
@@ -221,6 +225,65 @@ class TaskService:
         if row is None:
             raise TaskNotFoundError(task_id)
         return _task_from_row(row)
+
+    def cancel(
+        self,
+        task_id: str,
+        *,
+        error_code: str = "OPERATOR_CANCELLED",
+    ) -> TaskRecord:
+        task = self.get(task_id)
+        if task.status in {
+            "succeeded",
+            "failed",
+            "cancelled",
+            "unknown",
+            "reconcile_required",
+            "effect_committed",
+            "reported",
+        }:
+            raise TaskAlreadyTerminalError(task_id)
+        with psycopg.connect(self.database_url) as connection:
+            row = connection.execute(
+                """
+                UPDATE tasks
+                SET status = 'cancelled',
+                    error_code = %s,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE task_id = %s
+                  AND status IN ('queued', 'accepted', 'executing')
+                RETURNING task_id, operation_id, device_id, account_id, playbook, params,
+                    effect_class, effect_committed, status, reconcile_required, priority,
+                    timeout_sec, source, error_code, created_at, updated_at
+                """,
+                (error_code, task_id),
+            ).fetchone()
+        if row is None:
+            raise TaskAlreadyTerminalError(task_id)
+        return _task_from_row(row)
+
+    def cancel_open_for_device(
+        self,
+        device_id: str,
+        *,
+        error_code: str = "DEVICE_OFFLINE_CANCELLED",
+    ) -> list[TaskRecord]:
+        with psycopg.connect(self.database_url) as connection:
+            rows = connection.execute(
+                """
+                UPDATE tasks
+                SET status = 'cancelled',
+                    error_code = %s,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE device_id = %s
+                  AND status IN ('queued', 'accepted', 'executing')
+                RETURNING task_id, operation_id, device_id, account_id, playbook, params,
+                    effect_class, effect_committed, status, reconcile_required, priority,
+                    timeout_sec, source, error_code, created_at, updated_at
+                """,
+                (error_code, device_id),
+            ).fetchall()
+        return [_task_from_row(row) for row in rows]
 
     def mark_readonly_succeeded_from_event(self, *, device_id: str, task_id: str) -> TaskRecord:
         return self.mark_from_event(
