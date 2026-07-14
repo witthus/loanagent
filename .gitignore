@@ -27,5 +27,9 @@ control-plane/.ruff_cache/
 ops-web/node_modules/
 ops/m0/generated/
 ops/m0/device-inventory.tsv
+ops/m0/fonts/
+
+# Generated install guide copies (publish into agent-releases/ separately)
+矩阵助手-*.pdf
 
 *.log

@@ -52,7 +52,7 @@ class MediaBridgeTest {
     fun dispatcherFailsMediaMissingWithoutRunningEngine() {
         val engine = PlaybookEngine(
             runtime = PlaybookEngineTest.FakePlaybookRuntime(
-                hint = PageHint.EDITOR,
+                startHint = PageHint.EDITOR,
                 clickOk = true,
                 setTextOk = true,
             ),
@@ -81,7 +81,7 @@ class MediaBridgeTest {
     fun dispatcherSkipsPrepForNonPublishPlaybooks() {
         var prepCalls = 0
         val engine = PlaybookEngine(
-            runtime = PlaybookEngineTest.FakePlaybookRuntime(hint = PageHint.HOME),
+            runtime = PlaybookEngineTest.FakePlaybookRuntime(startHint = PageHint.HOME),
             registry = DefaultPlaybookRegistry.create(),
             ledger = MemoryEffectLedger(),
         )
@@ -102,7 +102,7 @@ class MediaBridgeTest {
     fun dispatcherPassesPreparedParamsThrough() {
         val engine = PlaybookEngine(
             runtime = PlaybookEngineTest.FakePlaybookRuntime(
-                hint = PageHint.EDITOR,
+                startHint = PageHint.EDITOR,
                 clickOk = true,
                 setTextOk = true,
             ),

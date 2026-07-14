@@ -82,6 +82,38 @@ def test_reject_plaintext_contact_patterns() -> None:
             pass
 
 
+def test_ingest_skips_chrome_and_noise_titles() -> None:
+    _, account_id = create_bound_account()
+    mqtt_bus = RecordingMqttBus()
+
+    with TestClient(app) as client:
+        wire_services(client, mqtt_bus)
+        response = client.post(
+            "/api/v1/inbox/ingest",
+            headers=ops_headers(),
+            json={
+                "account_id": account_id,
+                "threads": [
+                    {"title_summary": "逛逛店铺", "preview_summary": "x", "unread": False},
+                    {"title_summary": "发消息…", "preview_summary": "x", "unread": False},
+                    {"title_summary": "你好茶叶不错", "preview_summary": "x", "unread": False},
+                    {
+                        "title_summary": "静生百慧茶叶馆",
+                        "preview_summary": "云测",
+                        "unread": True,
+                    },
+                ],
+            },
+        )
+        assert response.status_code == 200
+        threads = client.get(
+            f"/api/v1/inbox/threads?account_id={account_id}",
+            headers=ops_headers(),
+        ).json()
+        titles = {t["title_summary"] for t in threads}
+        assert titles == {"静生百慧茶叶馆"}
+
+
 def test_ingest_upserts_threads() -> None:
     _, account_id = create_bound_account()
     mqtt_bus = RecordingMqttBus()
@@ -233,6 +265,10 @@ def test_lead_mark_works() -> None:
     _, account_id = create_bound_account()
     mqtt_bus = RecordingMqttBus()
 
+    assert matching[0]["status"] == "hot"
+    assert matching[0]["account_id"] == account_id
+    assert matching[0]["title_summary"] == "高意向用户"
+
     with TestClient(app) as client:
         wire_services(client, mqtt_bus)
         ingest = client.post(
@@ -261,6 +297,7 @@ def test_lead_mark_works() -> None:
             json={"thread_id": thread_id, "status": "hot", "note": "已沟通"},
         )
         listed = client.get("/api/v1/inbox/leads", headers=ops_headers())
+        detail = client.get(f"/api/v1/inbox/threads/{thread_id}", headers=ops_headers())
 
     assert ingest.status_code == 200
     assert lead.status_code == 200
@@ -272,3 +309,8 @@ def test_lead_mark_works() -> None:
     matching = [item for item in listed.json() if item["thread_id"] == thread_id]
     assert len(matching) == 1
     assert matching[0]["status"] == "hot"
+    assert matching[0]["account_id"] == account_id
+    assert matching[0]["title_summary"] == "高意向用户"
+    assert detail.status_code == 200
+    assert detail.json()["account_id"] == account_id
+    assert detail.json()["title_summary"] == "高意向用户"

@@ -9,7 +9,8 @@ from loanagent.db import migrate_fleet_schema
 
 _DEVICE_COLUMNS = """
     device_id, agent_version, manufacturer, model, online, last_seen_at,
-    wifi_connected, a11y_bound, cellular_ok, created_at, updated_at, display_name
+    wifi_connected, a11y_bound, cellular_ok, created_at, updated_at, display_name,
+    public_ip, geo_label
 """
 
 
@@ -27,6 +28,8 @@ class DeviceRecord:
     created_at: datetime
     updated_at: datetime
     display_name: str | None = None
+    public_ip: str | None = None
+    geo_label: str | None = None
 
 
 class DeviceNotFoundError(Exception):
@@ -75,27 +78,50 @@ class DeviceRepository:
         wifi_connected: bool | None = None,
         a11y_bound: bool | None = None,
         cellular_ok: bool | None = None,
+        manufacturer: str | None = None,
+        model: str | None = None,
+        public_ip: str | None = None,
+        geo_label: str | None = None,
     ) -> DeviceRecord:
         self._validate_device_id(device_id)
         with psycopg.connect(self.database_url) as connection:
             row = connection.execute(
                 f"""
                 INSERT INTO devices (
-                    device_id, agent_version, online, last_seen_at, wifi_connected,
-                    a11y_bound, cellular_ok
+                    device_id, agent_version, manufacturer, model, online, last_seen_at,
+                    wifi_connected, a11y_bound, cellular_ok, public_ip, geo_label
                 )
-                VALUES (%s, %s, TRUE, CURRENT_TIMESTAMP, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, TRUE, CURRENT_TIMESTAMP, %s, %s, %s, %s, %s)
                 ON CONFLICT (device_id) DO UPDATE
                 SET agent_version = COALESCE(EXCLUDED.agent_version, devices.agent_version),
+                    manufacturer = COALESCE(EXCLUDED.manufacturer, devices.manufacturer),
+                    model = COALESCE(EXCLUDED.model, devices.model),
                     online = TRUE,
                     last_seen_at = CURRENT_TIMESTAMP,
                     wifi_connected = COALESCE(EXCLUDED.wifi_connected, devices.wifi_connected),
                     a11y_bound = COALESCE(EXCLUDED.a11y_bound, devices.a11y_bound),
                     cellular_ok = COALESCE(EXCLUDED.cellular_ok, devices.cellular_ok),
+                    public_ip = COALESCE(EXCLUDED.public_ip, devices.public_ip),
+                    geo_label = CASE
+                        WHEN EXCLUDED.public_ip IS NOT NULL
+                             AND EXCLUDED.public_ip IS DISTINCT FROM devices.public_ip
+                        THEN EXCLUDED.geo_label
+                        ELSE COALESCE(EXCLUDED.geo_label, devices.geo_label)
+                    END,
                     updated_at = CURRENT_TIMESTAMP
                 RETURNING {_DEVICE_COLUMNS}
                 """,
-                (device_id, agent_version, wifi_connected, a11y_bound, cellular_ok),
+                (
+                    device_id,
+                    agent_version,
+                    manufacturer,
+                    model,
+                    wifi_connected,
+                    a11y_bound,
+                    cellular_ok,
+                    public_ip,
+                    geo_label,
+                ),
             ).fetchone()
         return _device_from_row(row)
 
@@ -120,7 +146,10 @@ class DeviceRepository:
                 f"""
                 SELECT {_DEVICE_COLUMNS}
                 FROM devices
-                ORDER BY device_id
+                ORDER BY
+                    CASE WHEN geo_label IS NULL OR geo_label = '' THEN 1 ELSE 0 END,
+                    geo_label NULLS LAST,
+                    device_id
                 """
             ).fetchall()
         return [_device_from_row(row) for row in rows]
@@ -215,6 +244,31 @@ class DeviceRepository:
         if deleted is None:
             raise DeviceNotFoundError(device_id)
 
+    def update_geo_if_ip_matches(
+        self,
+        device_id: str,
+        *,
+        public_ip: str,
+        geo_label: str | None,
+    ) -> DeviceRecord | None:
+        """Persist geo only when the device still reports the same public IP."""
+        self._validate_device_id(device_id)
+        with psycopg.connect(self.database_url) as connection:
+            row = connection.execute(
+                f"""
+                UPDATE devices
+                SET geo_label = %s,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE device_id = %s
+                  AND public_ip = %s
+                RETURNING {_DEVICE_COLUMNS}
+                """,
+                (geo_label, device_id, public_ip),
+            ).fetchone()
+        if row is None:
+            return None
+        return _device_from_row(row)
+
     @staticmethod
     def _validate_device_id(device_id: str) -> None:
         if not device_id:
@@ -235,4 +289,6 @@ def _device_from_row(row: tuple) -> DeviceRecord:
         created_at=row[9],
         updated_at=row[10],
         display_name=row[11] if len(row) > 11 else None,
+        public_ip=row[12] if len(row) > 12 else None,
+        geo_label=row[13] if len(row) > 13 else None,
     )

@@ -223,8 +223,9 @@ class InputStrategy {
     ): InputRoute = when {
         !editable -> InputRoute.BLOCKED_NOT_EDITABLE
         setTextSupported -> InputRoute.ACTION_SET_TEXT
-        imeEnabled -> InputRoute.MANUAL_IME
+        // Cloud playbooks cannot drive MANUAL_IME typing; paste first whenever allowed.
         clipboardAllowed -> InputRoute.CLIPBOARD
+        imeEnabled -> InputRoute.MANUAL_IME
         else -> InputRoute.BLOCKED_ENABLE_IME_MANUALLY
     }
 }

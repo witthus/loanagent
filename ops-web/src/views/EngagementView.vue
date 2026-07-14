@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
-import { api, ApiError } from '@/lib/api'
+import { api } from '@/lib/api'
+import { formatApiError } from '@/lib/apiError'
+import { useFleetAccounts } from '@/composables/useFleetAccounts'
 import { DEFAULT_PLATFORM } from '@/platform'
 
-type Account = { account_id: string; role: string; display_name?: string | null }
 type Chain = {
   chain_id: string
   publish_task_id: string
@@ -18,8 +19,8 @@ type Chain = {
 }
 
 const route = useRoute()
+const { accounts, accountNames, loadFleet, optionLabel, runnable } = useFleetAccounts()
 const chains = ref<Chain[]>([])
-const accounts = ref<Account[]>([])
 const selectedEngagers = ref<string[]>([])
 const message = ref('')
 const error = ref('')
@@ -42,7 +43,7 @@ async function stopChain(chainId: string) {
     message.value = '互动链已停止'
     await loadChains()
   } catch (err) {
-    error.value = err instanceof ApiError ? err.body : '停止失败'
+    error.value = formatApiError(err, '停止失败')
   } finally {
     stoppingId.value = null
   }
@@ -66,13 +67,15 @@ async function arrangeManual() {
     selectedEngagers.value = []
     await loadChains()
   } catch (err) {
-    error.value = err instanceof ApiError ? err.body : '创建互动链失败'
+    error.value = formatApiError(err, '创建互动链失败')
   } finally {
     arranging.value = false
   }
 }
 
 function toggleEngager(id: string) {
+  const account = engagers.value.find((a) => a.account_id === id)
+  if (account && !runnable(account)) return
   if (selectedEngagers.value.includes(id)) {
     selectedEngagers.value = selectedEngagers.value.filter((x) => x !== id)
   } else {
@@ -82,8 +85,7 @@ function toggleEngager(id: string) {
 
 function accountLabel(id: string | null | undefined): string {
   if (!id) return '—'
-  const found = accounts.value.find((a) => a.account_id === id)
-  return found?.display_name?.trim() || '未命名账号'
+  return accountNames.value[id] || '未命名账号'
 }
 
 const STATUS_LABEL: Record<string, string> = {
@@ -101,10 +103,8 @@ const MODE_LABEL: Record<string, string> = {
 
 onMounted(async () => {
   try {
-    ;[chains.value, accounts.value] = await Promise.all([
-      api<Chain[]>('/api/v1/engagement/chains'),
-      api<Account[]>('/api/v1/accounts?platform=xhs'),
-    ])
+    await loadFleet()
+    await loadChains()
   } catch {
     error.value = '加载互动链失败'
   }
@@ -122,13 +122,19 @@ onMounted(async () => {
       <p class="muted">发布任务：{{ arrangeTaskId }}</p>
       <p>选择参与互动的互动号：</p>
       <div class="engagers">
-        <label v-for="a in engagers" :key="a.account_id" class="check">
+        <label
+          v-for="a in engagers"
+          :key="a.account_id"
+          class="check"
+          :class="{ disabled: !runnable(a) }"
+        >
           <input
             type="checkbox"
             :checked="selectedEngagers.includes(a.account_id)"
+            :disabled="!runnable(a)"
             @change="toggleEngager(a.account_id)"
           />
-          {{ a.display_name?.trim() || '未命名账号' }}
+          {{ optionLabel(a) }}
         </label>
       </div>
       <button
@@ -138,6 +144,7 @@ onMounted(async () => {
       >
         {{ arranging ? '提交中…' : '创建手动互动链' }}
       </button>
+      <p class="hint">离线或无障碍未开的互动号不可选。</p>
     </div>
 
     <table v-if="chains.length">
@@ -195,6 +202,8 @@ onMounted(async () => {
 .panel h2 { margin: 0; font-size: 1.1rem; }
 .engagers { display: flex; flex-wrap: wrap; gap: 12px; }
 .check { display: flex; align-items: center; gap: 6px; font-weight: 500; }
+.check.disabled { opacity: 0.55; }
+.hint { color: #5c6770; margin: 0; font-size: 0.88rem; }
 table { width: 100%; border-collapse: collapse; background: #fff; border-radius: 12px; overflow: hidden; }
 th, td { text-align: left; padding: 12px 14px; border-bottom: 1px solid #eee; }
 th { background: #f3f4f6; }

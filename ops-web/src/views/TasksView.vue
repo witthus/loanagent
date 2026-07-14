@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { api } from '@/lib/api'
 import { humanizeError } from '@/lib/humanize'
@@ -22,18 +22,28 @@ type Task = {
 }
 
 const PAGE_SIZE = 20
+const TERMINAL = new Set(['succeeded', 'failed', 'cancelled', 'rejected', 'timed_out'])
 const route = useRoute()
 const router = useRouter()
 const allRows = ref<Task[]>([])
 const accountNames = ref<Record<string, string>>({})
+const accounts = ref<AccountLike[]>([])
+const filterAccountId = ref('')
+const filterStatus = ref('')
 const expanded = ref<Record<string, boolean>>({})
 const error = ref('')
 const message = ref('')
 const page = ref(1)
+const loading = ref(false)
 const cancelling = ref<string | null>(null)
+let refreshTimer: ReturnType<typeof setInterval> | null = null
 
 const ACTIVE = new Set(['queued', 'accepted', 'executing'])
 const focusTaskId = computed(() => (route.query.task_id as string) || '')
+
+const hasActiveTasks = computed(() =>
+  allRows.value.some((row) => !TERMINAL.has(row.status)),
+)
 
 const sortedRows = computed(() =>
   [...allRows.value].sort((a, b) => {
@@ -43,9 +53,20 @@ const sortedRows = computed(() =>
   }),
 )
 
+const filteredRows = computed(() => {
+  let rows = sortedRows.value
+  if (filterAccountId.value) {
+    rows = rows.filter((row) => row.account_id === filterAccountId.value)
+  }
+  if (filterStatus.value) {
+    rows = rows.filter((row) => row.status === filterStatus.value)
+  }
+  return rows
+})
+
 const focusedRows = computed(() => {
-  if (!focusTaskId.value) return sortedRows.value
-  return sortedRows.value.filter((row) => row.task_id === focusTaskId.value)
+  if (!focusTaskId.value) return filteredRows.value
+  return filteredRows.value.filter((row) => row.task_id === focusTaskId.value)
 })
 
 const totalPages = computed(() =>
@@ -70,18 +91,47 @@ function clearFocus() {
   router.push({ name: 'tasks' })
 }
 
+watch([filterAccountId, filterStatus], () => {
+  page.value = 1
+})
+
+watch(focusTaskId, (id) => {
+  page.value = 1
+  if (id) expanded.value[id] = true
+})
+
+watch(totalPages, (n) => {
+  if (page.value > n) page.value = n
+})
+
+onMounted(async () => {
+  await loadTasks()
+  refreshTimer = setInterval(() => {
+    if (hasActiveTasks.value || focusTaskId.value) void loadTasks()
+  }, 4000)
+})
+
+onUnmounted(() => {
+  if (refreshTimer) clearInterval(refreshTimer)
+})
+
 async function loadTasks() {
+  if (loading.value) return
+  loading.value = true
   try {
-    const [tasks, accounts] = await Promise.all([
+    const [tasks, accountRows] = await Promise.all([
       api<Task[]>('/api/v1/tasks'),
       api<AccountLike[]>('/api/v1/accounts?platform=xhs'),
     ])
     allRows.value = tasks
-    accountNames.value = buildAccountNameMap(accounts)
+    accounts.value = accountRows
+    accountNames.value = buildAccountNameMap(accountRows)
     if (focusTaskId.value) expanded.value[focusTaskId.value] = true
     error.value = ''
   } catch {
     error.value = '加载任务失败'
+  } finally {
+    loading.value = false
   }
 }
 
@@ -100,17 +150,6 @@ async function cancelTask(taskId: string) {
     cancelling.value = null
   }
 }
-
-watch(focusTaskId, (id) => {
-  page.value = 1
-  if (id) expanded.value[id] = true
-})
-
-watch(totalPages, (n) => {
-  if (page.value > n) page.value = n
-})
-
-onMounted(loadTasks)
 </script>
 
 <template>
@@ -119,7 +158,36 @@ onMounted(loadTasks)
     <p v-if="focusTaskId" class="focus-banner">
       正在查看单条任务
       <button type="button" class="link-btn" @click="clearFocus">返回全部任务</button>
+      <button type="button" class="link-btn" :disabled="loading" @click="loadTasks">
+        {{ loading ? '刷新中…' : '刷新' }}
+      </button>
     </p>
+    <div v-if="!focusTaskId" class="filters">
+      <button type="button" class="link-btn refresh" :disabled="loading" @click="loadTasks">
+        {{ loading ? '刷新中…' : '刷新任务' }}
+      </button>
+      <label>
+        账号
+        <select v-model="filterAccountId">
+          <option value="">全部账号</option>
+          <option v-for="a in accounts" :key="a.account_id" :value="a.account_id">
+            {{ accountNames[a.account_id] || a.account_id }}
+          </option>
+        </select>
+      </label>
+      <label>
+        状态
+        <select v-model="filterStatus">
+          <option value="">全部状态</option>
+          <option value="accepted">已下发</option>
+          <option value="executing">执行中</option>
+          <option value="succeeded">成功</option>
+          <option value="failed">失败</option>
+          <option value="timed_out">超时</option>
+          <option value="cancelled">已取消</option>
+        </select>
+      </label>
+    </div>
     <p v-if="message" class="ok">{{ message }}</p>
     <p v-if="error" class="error">{{ error }}</p>
     <template v-if="!error || allRows.length">
@@ -185,6 +253,29 @@ onMounted(loadTasks)
 </template>
 
 <style scoped>
+.filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  margin-bottom: 14px;
+  background: #fff;
+  border-radius: 12px;
+  padding: 14px 16px;
+}
+.filters label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-weight: 600;
+  font-size: 0.9rem;
+}
+.filters select {
+  min-width: 180px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid #d0d5dd;
+  font: inherit;
+}
 table { width: 100%; border-collapse: collapse; background: #fff; border-radius: 12px; overflow: hidden; }
 th, td { text-align: left; padding: 12px 14px; border-bottom: 1px solid #eee; }
 th { background: #f3f4f6; }
@@ -196,9 +287,11 @@ th { background: #f3f4f6; }
   font-weight: 600;
   cursor: pointer;
   padding: 0;
+  font: inherit;
 }
-.link-btn:disabled { opacity: 0.6; cursor: default; }
+.link-btn:disabled { opacity: 0.6; cursor: not-allowed; }
 .actions-cell { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+.filters .refresh { align-self: flex-end; padding-bottom: 8px; }
 .muted { color: #5c6770; margin: 4px 0 0; }
 .ok { color: #067647; }
 .error { color: #b42318; }

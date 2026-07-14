@@ -17,17 +17,26 @@ object SurfaceNavigator {
     private const val BACK_LIMIT = 4
     private val CENTER_IN_LOCATOR = Regex("""center=(\d+),(\d+)""")
 
+    /**
+     * Wake / unlock (swipe or none) then bring XHS to the foreground.
+     * Never assume the phone is already lit or on XHS.
+     */
     fun ensureForeground(runtime: PlaybookRuntime): NavResult {
         if (!runtime.accessibilityAlive()) return NavResult.Failed("A11Y_DOWN")
-        if (!runtime.waitForXhsForeground(8_000)) {
+        runtime.ensureScreenReady(15_000)?.let { return NavResult.Failed(it) }
+        if (runtime.waitForXhsForeground(600)) return NavResult.Ok
+        repeat(3) {
             runtime.launchXhs()
-            if (!runtime.waitForXhsForeground(12_000)) {
-                return NavResult.Failed("XHS_NOT_FOREGROUND")
-            }
+            if (runtime.waitForXhsForeground(10_000)) return NavResult.Ok
+            runtime.sleep(500)
         }
-        return NavResult.Ok
+        return NavResult.Failed("XHS_NOT_FOREGROUND")
     }
 
+    /**
+     * Always navigate home → 消息 from any screen. Never trust that the device is
+     * already on the inbox list (open DM / wrong tab are common failure modes).
+     */
     fun goInbox(runtime: PlaybookRuntime): NavResult {
         ensureForeground(runtime).let { if (it is NavResult.Failed) return it }
         val startHint = runtime.currentPageHint()
@@ -38,31 +47,35 @@ object SurfaceNavigator {
                 return NavResult.Failed("XHS_NOT_FOREGROUND")
             }
             if (!waitForMainTabs(runtime)) {
-                // Fall back to backs if CLEAR_TASK did not drop the note sheet.
                 resetTowardHome(runtime)
             }
         } else {
             resetTowardHome(runtime)
             runtime.sleep(600)
         }
-        if (onInboxSurface(runtime)) return NavResult.Ok
+        // Leave any open DM before treating the message tab as the list hub.
+        leaveOpenDmIfNeeded(runtime)
         if (hasMainBottomTabs(runtime) && clickMessageTab(runtime)) {
             runtime.sleep(1_400)
-            if (onInboxSurface(runtime)) return NavResult.Ok
+            leaveOpenDmIfNeeded(runtime)
+            if (onInboxListNotOpenChat(runtime)) return NavResult.Ok
         }
         runtime.launchXhs()
         if (!runtime.waitForXhsForeground(12_000)) {
             return NavResult.Failed("XHS_NOT_FOREGROUND")
         }
         waitForMainTabs(runtime)
+        leaveOpenDmIfNeeded(runtime)
         if (hasMainBottomTabs(runtime) && clickMessageTab(runtime)) {
             runtime.sleep(1_800)
-            if (onInboxSurface(runtime)) return NavResult.Ok
+            leaveOpenDmIfNeeded(runtime)
+            if (onInboxListNotOpenChat(runtime)) return NavResult.Ok
         }
         if (hasMainBottomTabs(runtime)) {
             runtime.tap(756, 2294)
             runtime.sleep(1_500)
-            if (onInboxSurface(runtime)) return NavResult.Ok
+            leaveOpenDmIfNeeded(runtime)
+            if (onInboxListNotOpenChat(runtime)) return NavResult.Ok
         }
         return NavResult.Failed("NAV_TIMEOUT")
     }
@@ -92,12 +105,22 @@ object SurfaceNavigator {
             runtime.looksLikeInboxListSurface() ||
             looksLikeInboxHub(runtime)
 
+    private fun onInboxListNotOpenChat(runtime: PlaybookRuntime): Boolean =
+        onInboxSurface(runtime) && !runtime.looksLikeOpenDmThreadSurface()
+
+    /** Back out of an open DM until the message list / main tabs reappear. */
+    private fun leaveOpenDmIfNeeded(runtime: PlaybookRuntime) {
+        var backs = 0
+        while (backs < 4 && runtime.looksLikeOpenDmThreadSurface()) {
+            runtime.globalBack()
+            runtime.sleep(400)
+            backs += 1
+        }
+    }
+
+    /** Always home → 我 → profile; never reuse an already-visible profile page. */
     fun goProfile(runtime: PlaybookRuntime): NavResult {
         ensureForeground(runtime).let { if (it is NavResult.Failed) return it }
-        if (looksLikeProfile(runtime)) {
-            ensureNotesTab(runtime)
-            return NavResult.Ok
-        }
         if (openProfile(runtime)) {
             ensureNotesTab(runtime)
             return NavResult.Ok
@@ -156,6 +179,10 @@ object SurfaceNavigator {
             tapNodeContaining(runtime, titleSummary)
     }
 
+    /**
+     * Always navigate home → 我 → note → comments. Never reuse an already-open
+     * note/comments sheet from a previous command.
+     */
     fun goNoteComments(
         runtime: PlaybookRuntime,
         titleSummary: String?,
@@ -163,12 +190,6 @@ object SurfaceNavigator {
         locatorHint: String? = null,
     ): NavResult {
         ensureForeground(runtime).let { if (it is NavResult.Failed) return it }
-        val page = runtime.currentPageHint()
-        if (page == PageHint.COMMENTS) return NavResult.Ok
-        if (page == PageHint.NOTE_DETAIL) {
-            openCommentsChrome(runtime)
-            return NavResult.Ok
-        }
 
         val title = titleSummary?.trim()?.takeIf { it.isNotEmpty() }
         val alt = xhsHint?.trim()?.takeIf { it.isNotEmpty() }
@@ -426,19 +447,31 @@ object SurfaceNavigator {
             runtime.clickTextContaining("消息", timeoutMs = 3_000)
 
     private fun resetTowardHome(runtime: PlaybookRuntime) {
-        // Note detail / comment sheets hide the real bottom tabs. Absolute taps at
-        // tab coordinates hit note action chrome (赞/收藏/评论) instead — back out first.
+        // Note detail / comment / open-DM sheets hide the real bottom tabs. Absolute taps
+        // at tab coordinates hit note action chrome instead — back out first.
         // ViewPager can still bleed 首页/消息 nodes into the note tree, so never trust
         // tab chrome while page_hint is NOTE_DETAIL or COMMENTS.
         var backs = 0
         while (backs < 10) {
             val hint = runtime.currentPageHint()
-            if (hint == PageHint.HOME || hint == PageHint.INBOX) break
-            if (hint == PageHint.NOTE_DETAIL || hint == PageHint.COMMENTS || !hasMainBottomTabs(runtime)) {
+            if (hint == PageHint.HOME) break
+            if (
+                hint == PageHint.NOTE_DETAIL ||
+                hint == PageHint.COMMENTS ||
+                runtime.looksLikeOpenDmThreadSurface() ||
+                !hasMainBottomTabs(runtime)
+            ) {
                 runtime.globalBack()
                 runtime.sleep(450)
                 backs += 1
                 continue
+            }
+            // Leave inbox / other tabs so every command starts from a known home root.
+            if (hint == PageHint.INBOX) {
+                if (tapBottomTabLabeled(runtime, "首页") || runtime.tap(108, 2294)) {
+                    runtime.sleep(500)
+                }
+                break
             }
             break
         }

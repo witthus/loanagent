@@ -13,7 +13,7 @@ The project deploy host (`119.45.36.208`, `/opt/loanagent`) is in **mainland Chi
   - `docker.m.daocloud.io/library/postgres:16-alpine`
   - `docker.m.daocloud.io/library/python:3.12.11-slim-bookworm`
   - `docker.m.daocloud.io/emqx/emqx:5.8.6`
-  - `docker.m.daocloud.io/minio/minio:<tag>`
+  - `docker.m.daocloud.io/library/node:22.14.0-bookworm-slim`
 - Host `/etc/docker/daemon.json` may already set `"registry-mirrors": ["https://docker.m.daocloud.io"]` — still use explicit DaoCloud image names when Hub pulls stall.
 - Server Dockerfiles: `docker/control-plane/Dockerfile.server` (mirrored bases). Prefer it over Hub/GHCR bases for remote builds.
 - Reuse images already present on the host (`docker images`) instead of re-pulling when possible.

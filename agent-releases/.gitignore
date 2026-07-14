@@ -1,0 +1,12 @@
+# Published Android Agent APK for ops download.
+#
+# Refresh locally:
+#   bash ops/m0/stage-apks.sh
+#   bash ops/m0/publish-agent-release.sh
+#
+# On the server, sync this directory to /opt/loanagent/agent-releases
+# (mounted read-only into control-plane as /app/agent-releases).
+
+*.apk
+*.pdf
+latest.json

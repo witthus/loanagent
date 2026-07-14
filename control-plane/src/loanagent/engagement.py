@@ -11,7 +11,15 @@ from psycopg.types.json import Jsonb
 from loanagent.db import migrate_fleet_schema
 from loanagent.platforms import DEFAULT_PLATFORM, normalize_platform
 from loanagent.roles import AccountRole
-from loanagent.tasks import TaskRecord, TaskService
+from loanagent.tasks import (
+    TaskAccessibilityDownError,
+    TaskAccountNotFoundError,
+    TaskAccountUnavailableError,
+    TaskDeviceUnavailableError,
+    TaskDispatchError,
+    TaskRecord,
+    TaskService,
+)
 
 
 DEFAULT_CONFIG: dict[str, Any] = {
@@ -98,14 +106,10 @@ class EngagementService:
         status = "pending"
         stop_reason: str | None = None
 
-        if engager_account_id is None:
+        if (engager_account_id is None):
             status = "stopped"
             stop_reason = "NO_ENGAGER_AVAILABLE"
-            self._insert_alert(
-                kind="engagement_skipped",
-                message="No active ENGAGER with online a11y-bound device; chain skipped.",
-                ref_id=chain_id,
-            )
+            # Expected in V1 single-publisher fleets — do not raise product alerts.
 
         with psycopg.connect(self.database_url) as connection:
             row = connection.execute(
@@ -278,10 +282,16 @@ class EngagementService:
         return None if row is None else _chain_from_row(row)
 
     def _advance_pending(self, chain: EngagementChainRecord) -> EngagementChainRecord:
-        engager = chain.engager_account_id
-        if engager is None and chain.engager_account_ids:
-            engager = chain.engager_account_ids[0]
-        if engager is None:
+        candidates: list[str] = []
+        if chain.engager_account_ids:
+            candidates.extend(chain.engager_account_ids)
+        if chain.engager_account_id and chain.engager_account_id not in candidates:
+            candidates.append(chain.engager_account_id)
+        if not candidates:
+            auto = self._pick_engager_account(platform=chain.platform)
+            if auto:
+                candidates.append(auto)
+        if not candidates:
             return self._stop_chain(chain.chain_id, reason="NO_ENGAGER_AVAILABLE")
 
         delay_sec = int(chain.config.get("delay_sec", DEFAULT_CONFIG["delay_sec"]))
@@ -296,29 +306,55 @@ class EngagementService:
             chain.config.get("comment_text", DEFAULT_CONFIG["comment_text"])
         )
         note_ref = chain.note_ref or chain.publish_task_id
-        task = self.task_service.create_and_dispatch(
-            account_id=engager,
-            playbook="post_comment@1.0",
-            params={
-                "text": comment_text,
-                "note_ref": note_ref,
-                "chain_id": chain.chain_id,
-            },
-            source="scheduler",
-        )
-        with psycopg.connect(self.database_url) as connection:
-            row = connection.execute(
-                f"""
-                UPDATE engagement_chains
-                SET status = 'running',
-                    post_comment_task_ids = %s,
-                    updated_at = CURRENT_TIMESTAMP
-                WHERE chain_id = %s
-                RETURNING {_CHAIN_SELECT}
-                """,
-                (Jsonb([task.task_id]), chain.chain_id),
-            ).fetchone()
-        return _chain_from_row(row)
+        last_error: Exception | None = None
+        for engager in candidates:
+            try:
+                task = self.task_service.create_and_dispatch(
+                    account_id=engager,
+                    playbook="post_comment@1.0",
+                    params={
+                        "text": comment_text,
+                        "note_ref": note_ref,
+                        "chain_id": chain.chain_id,
+                    },
+                    source="scheduler",
+                )
+            except (
+                TaskAccountNotFoundError,
+                TaskAccountUnavailableError,
+                TaskDeviceUnavailableError,
+                TaskAccessibilityDownError,
+                TaskDispatchError,
+            ) as error:
+                last_error = error
+                continue
+            with psycopg.connect(self.database_url) as connection:
+                row = connection.execute(
+                    f"""
+                    UPDATE engagement_chains
+                    SET status = 'running',
+                        engager_account_id = %s,
+                        post_comment_task_ids = %s,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE chain_id = %s
+                    RETURNING {_CHAIN_SELECT}
+                    """,
+                    (engager, Jsonb([task.task_id]), chain.chain_id),
+                ).fetchone()
+            return _chain_from_row(row)
+
+        reason = "NO_ENGAGER_AVAILABLE"
+        if isinstance(last_error, TaskAccountUnavailableError):
+            reason = "ACCOUNT_UNAVAILABLE"
+        elif isinstance(last_error, TaskDeviceUnavailableError):
+            reason = "DEVICE_UNAVAILABLE"
+        elif isinstance(last_error, TaskAccessibilityDownError):
+            reason = "A11Y_DOWN"
+        elif isinstance(last_error, TaskAccountNotFoundError):
+            reason = "ACCOUNT_NOT_FOUND"
+        elif isinstance(last_error, TaskDispatchError):
+            reason = "TASK_DISPATCH_FAILED"
+        return self._stop_chain(chain.chain_id, reason=reason)
 
     def _create_reply_for_post_comment(self, task: TaskRecord) -> None:
         chain = self._find_chain_for_task(task.task_id)

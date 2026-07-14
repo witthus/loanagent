@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.Intent
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
+import android.os.Looper
 import android.os.SystemClock
 import android.util.Log
 import java.util.concurrent.CountDownLatch
@@ -20,26 +21,129 @@ class AccessibilityPlaybookRuntime(
 
     override fun accessibilityAlive(): Boolean = M0AccessibilityService.instance != null
 
-    override fun launchXhs(): Boolean {
-        // Prefer CLEAR_TASK while XHS is already focused. GLOBAL_ACTION_HOME then
-        // startActivity is blocked on HyperOS as a background activity start.
-        val launch = context.packageManager.getLaunchIntentForPackage("com.xingin.xhs") ?: return false
-        launch.flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK
-        return try {
-            context.startActivity(launch)
-            true
-        } catch (_: Exception) {
-            false
+    override fun ensureScreenReady(timeoutMs: Long): String? {
+        val service = M0AccessibilityService.instance ?: return "A11Y_DOWN"
+        val power = service.getSystemService(android.os.PowerManager::class.java)
+        val keyguard = service.getSystemService(android.app.KeyguardManager::class.java)
+        if (power == null || keyguard == null) return ScreenReadyPolicy.ERROR_SECURE_OR_FAILED
+
+        val gate = ScreenReadyPolicy.gate(
+            interactive = power.isInteractive,
+            keyguardLocked = keyguard.isKeyguardLocked,
+            keyguardSecure = keyguard.isKeyguardSecure,
+        )
+        if (gate == null) return null
+        if (gate == ScreenReadyPolicy.ERROR_SECURE_OR_FAILED) {
+            return ScreenReadyPolicy.ERROR_SECURE_OR_FAILED
         }
+
+        val wakeResult = runCatching {
+            ScreenWakeActivity.request(service, timeoutMs.coerceAtLeast(5_000L))
+        }.getOrElse {
+            Log.w(TAG, "ensureScreenReady wake failed", it)
+            ScreenWakeResult.StartFailed
+        }
+
+        when (wakeResult) {
+            ScreenWakeResult.Ok -> {
+                if (ScreenWakeActivity.waitUntilReady(service, 3_000L)) return null
+            }
+            ScreenWakeResult.SecureKeyguard -> return ScreenReadyPolicy.ERROR_SECURE_OR_FAILED
+            else -> Unit
+        }
+
+        // Swipe-lock fallback: upward gesture on the lock screen.
+        if (keyguard.isKeyguardLocked && !keyguard.isKeyguardSecure) {
+            swipeUnlockFallback()
+            if (ScreenWakeActivity.waitUntilReady(service, 4_000L)) return null
+        }
+
+        return if (power.isInteractive && !keyguard.isKeyguardLocked) {
+            null
+        } else {
+            ScreenReadyPolicy.ERROR_SECURE_OR_FAILED
+        }
+    }
+
+    private fun swipeUnlockFallback() {
+        // Typical swipe-up unlock on ~1080x2400 panels; harmless if already unlocked.
+        swipe(540, 2_000, 540, 700, durationMs = 450)
+        SystemClock.sleep(400)
+        swipe(540, 1_900, 540, 600, durationMs = 450)
+    }
+
+    override fun launchXhs(): Boolean {
+        // Must start from the AccessibilityService context. applicationContext /
+        // FGS starts are treated as background on HyperOS and silently fail, which
+        // surfaces as XHS_NOT_FOREGROUND even though the task "launched".
+        val service = M0AccessibilityService.instance
+        val starter: Context = service ?: context
+        val alreadyForeground = currentLease()?.packageName == XHS_PACKAGE
+        val launch = starter.packageManager.getLaunchIntentForPackage(XHS_PACKAGE) ?: return false
+        launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        if (alreadyForeground) {
+            // Reset nested note/DM sheets back to the main task root.
+            launch.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TASK)
+        } else {
+            launch.addFlags(
+                Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED or
+                    Intent.FLAG_ACTIVITY_REORDER_TO_FRONT,
+            )
+        }
+        if (startActivityOnMain(starter, launch)) return true
+        // Visible trampoline Activity is a second exemption path when direct start is blocked.
+        val trampoline =
+            Intent(starter, XhsLaunchTrampolineActivity::class.java).apply {
+                addFlags(
+                    Intent.FLAG_ACTIVITY_NEW_TASK or
+                        Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                        Intent.FLAG_ACTIVITY_NO_ANIMATION,
+                )
+            }
+        return startActivityOnMain(starter, trampoline)
     }
 
     override fun waitForXhsForeground(timeoutMs: Long): Boolean {
         val deadline = SystemClock.elapsedRealtime() + timeoutMs
         while (SystemClock.elapsedRealtime() < deadline) {
-            if (currentLease()?.packageName == "com.xingin.xhs") return true
-            SystemClock.sleep(400)
+            if (isXhsForeground()) return true
+            SystemClock.sleep(350)
         }
-        return currentLease()?.packageName == "com.xingin.xhs"
+        return isXhsForeground()
+    }
+
+    private fun isXhsForeground(): Boolean {
+        if (currentLease()?.packageName == XHS_PACKAGE) return true
+        // Focused window may briefly be SystemUI/IME; still accept when an XHS window is active.
+        val service = M0AccessibilityService.instance ?: return false
+        return service.hasAllowedPackageWindow(XHS_PACKAGE)
+    }
+
+    private fun startActivityOnMain(starter: Context, intent: Intent): Boolean {
+        val latch = CountDownLatch(1)
+        val ok = AtomicBoolean(false)
+        val runner = Runnable {
+            try {
+                starter.startActivity(intent)
+                ok.set(true)
+            } catch (error: Exception) {
+                Log.w(TAG, "startActivity failed for ${intent.component ?: intent.`package`}", error)
+            } finally {
+                latch.countDown()
+            }
+        }
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            runner.run()
+        } else {
+            android.os.Handler(Looper.getMainLooper()).post(runner)
+            latch.await(3, TimeUnit.SECONDS)
+        }
+        return ok.get()
+    }
+
+    companion object {
+        private const val TAG = "A11yPlaybookRuntime"
+        private const val XHS_PACKAGE = "com.xingin.xhs"
     }
 
     override fun currentPageHint(): PageHint? = observe()?.pageHint
@@ -260,6 +364,12 @@ class CloudBridgeCoordinator(
 
     fun start() {
         if (!started.compareAndSet(false, true)) return
+        if (!SupportedDeviceGate.isSupported()) {
+            Log.w(TAG, "refuse cloud bridge on unsupported device")
+            started.set(false)
+            return
+        }
+        CloudBridgeConfig.init(context)
         val runtime = AccessibilityPlaybookRuntime(context)
         val engine = PlaybookEngine(
             runtime = runtime,
@@ -278,6 +388,8 @@ class CloudBridgeCoordinator(
                         a11yBound = runtime.accessibilityAlive(),
                         wifiConnected = networkWifi(context),
                         cellularOk = networkCellular(context),
+                        manufacturer = android.os.Build.MANUFACTURER,
+                        model = android.os.Build.MODEL,
                     )
                 } catch (error: Exception) {
                     Log.w(TAG, "heartbeat failed", error)

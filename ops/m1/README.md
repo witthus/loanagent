@@ -12,7 +12,7 @@ stack:
 Start the stack from the repository root:
 
 ```bash
-docker compose -f infra/compose.yaml up -d postgres emqx minio control-plane
+docker compose -f infra/compose.yaml up -d postgres emqx control-plane
 bash ops/m1/smoke-m1-cloud.sh
 ```
 

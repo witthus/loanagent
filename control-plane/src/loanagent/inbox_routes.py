@@ -91,6 +91,19 @@ def list_inbox_threads(
     ]
 
 
+@router.get("/inbox/threads/{thread_id}", dependencies=[Depends(require_ops)])
+def get_inbox_thread(thread_id: str, request: Request) -> dict:
+    try:
+        thread = _inbox_service(request).get_thread(thread_id)
+    except InboxThreadNotFoundError as error:
+        raise _http_error(
+            404,
+            "THREAD_NOT_FOUND",
+            "Inbox thread does not exist.",
+        ) from error
+    return asdict(thread)
+
+
 @router.get("/inbox/threads/{thread_id}/messages", dependencies=[Depends(require_ops)])
 def list_thread_messages(thread_id: str, request: Request) -> list[dict]:
     try:

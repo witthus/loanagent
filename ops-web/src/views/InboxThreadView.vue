@@ -1,9 +1,19 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
-import { api, ApiError } from '@/lib/api'
+import { api } from '@/lib/api'
+import { formatApiError } from '@/lib/apiError'
+import { useFleetAccounts } from '@/composables/useFleetAccounts'
 import { humanizeError } from '@/lib/humanize'
 import { useTaskPoll } from '@/composables/useTaskPoll'
+
+type ThreadMeta = {
+  thread_id: string
+  account_id: string
+  title_summary: string
+  preview_summary: string | null
+  unread: boolean
+}
 
 type Message = {
   message_id: string
@@ -16,8 +26,10 @@ type Message = {
 }
 
 const route = useRoute()
+const { accountNames, loadFleet } = useFleetAccounts()
 const threadId = computed(() => route.params.threadId as string)
-const accountId = computed(() => (route.query.account_id as string) || '')
+const accountId = ref((route.query.account_id as string) || '')
+const thread = ref<ThreadMeta | null>(null)
 const messages = ref<Message[]>([])
 const replyText = ref('')
 const message = ref('')
@@ -26,13 +38,26 @@ const sending = ref(false)
 const opening = ref(false)
 const { status, errorCode, poll } = useTaskPoll()
 
-function parseErrorCode(body: string): string | null {
-  try {
-    const json = JSON.parse(body)
-    return json?.detail?.code ?? null
-  } catch {
-    return null
-  }
+const accountLabel = computed(() => {
+  const id = accountId.value || thread.value?.account_id
+  if (!id) return '未知账号'
+  return accountNames.value[id] || '未命名账号'
+})
+
+const peerTitle = computed(() => thread.value?.title_summary || '私信会话')
+
+function isOutbound(sender: string | null | undefined): boolean {
+  const s = (sender || '').trim()
+  if (!s) return false
+  const mine = accountLabel.value
+  if (s === mine) return true
+  // Common self labels from device extractors
+  return s === '我' || s === '自己' || s.includes(mine)
+}
+
+async function loadThread() {
+  thread.value = await api<ThreadMeta>(`/api/v1/inbox/threads/${threadId.value}`)
+  if (!accountId.value) accountId.value = thread.value.account_id
 }
 
 async function loadMessages() {
@@ -58,7 +83,7 @@ async function openThreadOnDevice() {
       error.value = `${human.title}。${human.nextStep}`
     }
   } catch (err) {
-    error.value = err instanceof ApiError ? err.body : '打开会话失败'
+    error.value = formatApiError(err, '打开会话失败')
   } finally {
     opening.value = false
   }
@@ -86,16 +111,7 @@ async function sendReply() {
       error.value = `${human.title}。${human.nextStep}`
     }
   } catch (err) {
-    if (err instanceof ApiError) {
-      const code = parseErrorCode(err.body)
-      if (code === 'CONTACT_FORBIDDEN') {
-        error.value = '不能直接在私信里写微信号或手机号，请用平台内私信沟通。'
-      } else {
-        error.value = err.body
-      }
-    } else {
-      error.value = '回复失败'
-    }
+    error.value = formatApiError(err, '回复失败')
   } finally {
     sending.value = false
   }
@@ -103,12 +119,14 @@ async function sendReply() {
 
 onMounted(async () => {
   try {
+    await loadFleet()
+    await loadThread()
     await loadMessages()
     if (!messages.value.length) {
       await openThreadOnDevice()
     }
-  } catch {
-    error.value = '加载消息失败'
+  } catch (err) {
+    error.value = formatApiError(err, '加载会话失败')
   }
 })
 </script>
@@ -116,17 +134,31 @@ onMounted(async () => {
 <template>
   <section>
     <p class="back">
-      <router-link to="/inbox">← 返回私信列表</router-link>
+      <router-link :to="{ path: '/inbox', query: accountId ? { account_id: accountId } : {} }">
+        ← 返回私信列表
+      </router-link>
     </p>
-    <h1>私信会话</h1>
+    <header class="page-head">
+      <h1>{{ peerTitle }}</h1>
+      <p class="meta">
+        所属账号：<strong>{{ accountLabel }}</strong>
+      </p>
+    </header>
     <div class="toolbar">
       <button type="button" class="secondary" :disabled="opening" @click="openThreadOnDevice">
         {{ opening ? '拉取中…' : '从手机打开并同步消息' }}
       </button>
     </div>
     <div class="thread">
-      <article v-for="m in messages" :key="m.message_id" class="bubble">
-        <header>{{ m.sender_summary || '对方' }}</header>
+      <article
+        v-for="m in messages"
+        :key="m.message_id"
+        class="bubble"
+        :class="{ mine: isOutbound(m.sender_summary) }"
+      >
+        <header>
+          <span class="who">{{ isOutbound(m.sender_summary) ? `${accountLabel}（本号）` : (m.sender_summary || '对方') }}</span>
+        </header>
         <p>{{ m.body_summary || '（无内容）' }}</p>
         <time class="muted">{{ m.posted_at_text || m.created_at }}</time>
       </article>
@@ -134,7 +166,7 @@ onMounted(async () => {
     </div>
     <form class="panel" @submit.prevent="sendReply">
       <label>
-        回复内容
+        回复内容（将以「{{ accountLabel }}」发送）
         <textarea v-model="replyText" rows="3" maxlength="4000" placeholder="输入回复…" required />
       </label>
       <button type="submit" :disabled="sending || !accountId">
@@ -151,6 +183,9 @@ onMounted(async () => {
 <style scoped>
 .back { margin: 0 0 12px; }
 .back a { color: #2d6a4f; text-decoration: none; font-weight: 600; }
+.page-head { margin-bottom: 12px; }
+.page-head h1 { margin: 0 0 6px; }
+.meta { margin: 0; color: #5c6770; }
 .toolbar { margin-bottom: 12px; }
 .thread { display: flex; flex-direction: column; gap: 10px; margin-bottom: 20px; }
 .bubble {
@@ -158,8 +193,16 @@ onMounted(async () => {
   border-radius: 12px;
   padding: 14px 16px;
   border: 1px solid #e5e7eb;
+  max-width: 640px;
+  align-self: flex-start;
+}
+.bubble.mine {
+  align-self: flex-end;
+  background: #eef6f1;
+  border-color: #c5ddd0;
 }
 .bubble header { font-weight: 600; margin-bottom: 6px; }
+.who { font-size: 0.92rem; }
 .bubble p { margin: 0 0 6px; }
 .empty { color: #5c6770; }
 .panel {

@@ -63,11 +63,15 @@ class InboxSyncPlaybook : Playbook {
         if (!runtime.accessibilityAlive()) {
             return PlaybookResult.failed(taskId, "A11Y_DOWN")
         }
+        // Always: any screen → home → 消息 list. Never scrape an open chat as the inbox.
         val nav = SurfaceNavigator.goInbox(runtime)
         if (nav is NavResult.Failed) {
             return PlaybookResult.failed(taskId, nav.errorCode)
         }
         val maxItems = command.intParam("max_items", 20)
+        if (runtime.looksLikeOpenDmThreadSurface()) {
+            return PlaybookResult.failed(taskId, "WRONG_PAGE")
+        }
         // Prefer hub surface chrome; page hint alone is brittle across XHS builds.
         if (!runtime.looksLikeInboxListSurface() && runtime.currentPageHint() != PageHint.INBOX) {
             return PlaybookResult.failed(taskId, "WRONG_PAGE")
@@ -201,14 +205,10 @@ class InboxOpenThreadPlaybook : Playbook {
         val titleHint = command.stringParam("open_title_hint")
             ?: command.stringParam("thread_title")
         val maxItems = command.intParam("max_items", 20)
-        // Already in an open DM thread: allow without re-nav.
-        val alreadyOpen = runtime.looksLikeOpenDmThreadSurface() &&
-            runtime.extractDmMessages(maxItems).isNotEmpty()
-        if (!alreadyOpen) {
-            val nav = SurfaceNavigator.goDmThread(runtime, titleHint)
-            if (nav is NavResult.Failed) {
-                return PlaybookResult.failed(taskId, nav.errorCode)
-            }
+        // Always navigate home → inbox → thread; never trust an already-open chat.
+        val nav = SurfaceNavigator.goDmThread(runtime, titleHint)
+        if (nav is NavResult.Failed) {
+            return PlaybookResult.failed(taskId, nav.errorCode)
         }
         if (!runtime.looksLikeOpenDmThreadSurface()) {
             return PlaybookResult.failed(taskId, "WRONG_PAGE")

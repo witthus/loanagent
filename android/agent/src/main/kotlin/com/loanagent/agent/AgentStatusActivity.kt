@@ -28,7 +28,9 @@ class AgentStatusActivity : Activity() {
         super.onCreate(savedInstanceState)
         destroyed = false
         DiagnosticCache(this).deleteExpired()
-        startDebugKeepAliveIfPresent()
+        if (SupportedDeviceGate.isSupported()) {
+            startDebugKeepAliveIfPresent()
+        }
         setContentView(buildUi())
         refreshStatus()
     }
@@ -89,8 +91,12 @@ class AgentStatusActivity : Activity() {
             orientation = LinearLayout.VERTICAL
             setPadding(32, 48, 32, 48)
             addView(TextView(context).apply {
-                text = "M0 无障碍执行器诊断（仅单次、用户触发）"
+                text = "矩阵助手"
                 textSize = 20f
+            })
+            addView(TextView(context).apply {
+                text = "M0 无障碍执行器诊断（仅单次、用户触发）"
+                textSize = 14f
             })
             addView(status)
             button("刷新状态") { refreshStatus() }
@@ -169,13 +175,27 @@ class AgentStatusActivity : Activity() {
         }
 
     private fun refreshStatus() {
+        val snap = SupportedDeviceGate.snapshotFromBuild()
+        val supported = SupportedDeviceGate.isSupported(snap)
         val ime = M0InputMethodService.status(this)
         val controller = controllerProvider()
+        val deviceId = DeviceIdentityStore.deviceId(this)
         status.text = buildString {
+            append("\n应用版本: ${BuildConfig.VERSION_NAME} (code ${BuildConfig.VERSION_CODE})")
+            if (!supported) {
+                append("\n\n⚠ 设备不受支持\n")
+                append(SupportedDeviceGate.unsupportedMessage(snap))
+                append("\n\n已阻止云端心跳与任务通道。\n")
+                return@buildString
+            }
+            append("\n设备型号: ${SupportedDeviceGate.REQUIRED_LABEL}（已通过）")
+            append("\n本机: ${snap.summaryLine()}")
+            append("\n设备 ID: $deviceId")
             append("\n无障碍: ${if (controller != null) "ENABLED" else "DISABLED"}")
             append("\nIME: enabled=${ime.enabled}, selected=${ime.selected}")
             append("\n前台租约: ${controller?.currentLease() ?: "NONE"}")
             append("\n恢复记录: ${AgentRecoveryStore(this@AgentStatusActivity).status()}\n")
+            append("\n说明: 打开本页并保持运行后，云端「设备」页会出现此设备，可新建账号并绑定。\n")
         }
     }
 
