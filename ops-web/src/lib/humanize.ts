@@ -80,6 +80,11 @@ const MAP: Record<string, HumanMessage> = {
     detail: '只有「待发布」或「失败」的排期可以再次下发。',
     nextStep: '到「排期」确认状态后再试。',
   },
+  SCHEDULE_NOT_EDITABLE: {
+    title: '这条排期不能再改',
+    detail: '已下发或已结束的排期不能编辑。',
+    nextStep: '可删除后重新创建，或新建一条排期。',
+  },
   DEVICE_NOT_FOUND: {
     title: '还找不到这台手机',
     detail: '设备尚未完成首次心跳，或设备 ID 不正确。',

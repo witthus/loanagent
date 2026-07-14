@@ -250,3 +250,66 @@ def test_schedule_dispatch_creates_publish_note_task(
     topic, envelope = mqtt_bus.published[0]
     assert topic == f"devices/{device_id}/commands"
     assert envelope["playbook"] == "publish_note@1.0"
+
+
+def test_schedule_create_update_and_delete_with_publish_window(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("MEDIA_ROOT", str(tmp_path))
+    monkeypatch.setenv("MEDIA_SIGNING_SECRET", "test-media-secret")
+    monkeypatch.setenv("PUBLIC_BASE_URL", "http://127.0.0.1:8000")
+    _device_id, account_id = create_bound_account()
+    window_start = "2026-07-15T10:30:00+08:00"
+    window_end = "2026-07-15T11:00:00+08:00"
+
+    with TestClient(app) as client:
+        content = client.post(
+            "/api/v1/content",
+            headers=ops_headers(),
+            json={"title": "带时间窗排期", "body": "正文", "media_ids": []},
+        )
+        content_id = content.json()["content_id"]
+        created = client.post(
+            "/api/v1/schedules",
+            headers=ops_headers(),
+            json={
+                "account_id": account_id,
+                "content_id": content_id,
+                "window_start": window_start,
+                "window_end": window_end,
+            },
+        )
+        assert created.status_code == 200
+        schedule_id = created.json()["schedule_id"]
+        assert created.json()["window_start"] is not None
+        assert created.json()["window_end"] is not None
+
+        patched = client.patch(
+            f"/api/v1/schedules/{schedule_id}",
+            headers=ops_headers(),
+            json={
+                "window_start": "2026-07-16T09:00:00+08:00",
+                "window_end": None,
+            },
+        )
+        assert patched.status_code == 200
+        assert patched.json()["window_start"].startswith("2026-07-16T01:00:00")
+        assert patched.json()["window_end"] is None
+
+        deleted = client.delete(
+            f"/api/v1/schedules/{schedule_id}",
+            headers=ops_headers(),
+        )
+        assert deleted.status_code == 200
+        assert deleted.json()["ok"] is True
+
+        listed = client.get("/api/v1/schedules", headers=ops_headers())
+        assert schedule_id not in {row["schedule_id"] for row in listed.json()}
+
+        missing = client.delete(
+            f"/api/v1/schedules/{schedule_id}",
+            headers=ops_headers(),
+        )
+        assert missing.status_code == 404
+        assert missing.json()["detail"]["code"] == "SCHEDULE_NOT_FOUND"

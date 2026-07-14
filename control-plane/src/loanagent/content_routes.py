@@ -15,6 +15,7 @@ from loanagent.content import ContentNotFoundError, ContentRepository, ContentSe
 from loanagent.media import MediaNotFoundError, MediaRepository, MediaSignatureError
 from loanagent.schedules import (
     ScheduleNotDispatchableError,
+    ScheduleNotEditableError,
     ScheduleNotFoundError,
     ScheduleRepository,
 )
@@ -46,6 +47,15 @@ class ScheduleCreatePayload(BaseModel):
 
     account_id: str = Field(min_length=1, max_length=128)
     content_id: str = Field(min_length=1, max_length=128)
+    window_start: datetime | None = None
+    window_end: datetime | None = None
+
+
+class SchedulePatchPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    account_id: str | None = Field(default=None, min_length=1, max_length=128)
+    content_id: str | None = Field(default=None, min_length=1, max_length=128)
     window_start: datetime | None = None
     window_end: datetime | None = None
 
@@ -172,6 +182,41 @@ def create_schedule(payload: ScheduleCreatePayload, request: Request) -> dict:
 @router.get("/schedules", dependencies=[Depends(require_ops)])
 def list_schedules(request: Request) -> list[dict]:
     return [asdict(item) for item in _schedule_repository(request).list()]
+
+
+@router.patch("/schedules/{schedule_id}", dependencies=[Depends(require_ops)])
+def patch_schedule(
+    schedule_id: str,
+    payload: SchedulePatchPayload,
+    request: Request,
+) -> dict:
+    try:
+        record = _schedule_repository(request).update(
+            schedule_id,
+            **payload.model_dump(exclude_unset=True),
+        )
+    except ScheduleNotFoundError as error:
+        raise _http_error(404, "SCHEDULE_NOT_FOUND", "Schedule does not exist.") from error
+    except ScheduleNotEditableError as error:
+        raise _http_error(
+            409,
+            "SCHEDULE_NOT_EDITABLE",
+            "Only ready or failed schedules can be edited.",
+        ) from error
+    except ContentNotFoundError as error:
+        raise _http_error(404, "CONTENT_NOT_FOUND", "Content does not exist.") from error
+    except ValueError as error:
+        raise _http_error(400, "INVALID_SCHEDULE_PATCH", str(error)) from error
+    return asdict(record)
+
+
+@router.delete("/schedules/{schedule_id}", dependencies=[Depends(require_ops)])
+def delete_schedule(schedule_id: str, request: Request) -> dict:
+    try:
+        _schedule_repository(request).delete(schedule_id)
+    except ScheduleNotFoundError as error:
+        raise _http_error(404, "SCHEDULE_NOT_FOUND", "Schedule does not exist.") from error
+    return {"ok": True, "schedule_id": schedule_id}
 
 
 @router.post("/schedules/{schedule_id}/dispatch", dependencies=[Depends(require_ops)])

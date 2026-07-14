@@ -45,6 +45,18 @@ class ScheduleNotDispatchableError(Exception):
     pass
 
 
+class ScheduleNotEditableError(Exception):
+    pass
+
+
+PATCHABLE_FIELDS = {
+    "account_id",
+    "content_id",
+    "window_start",
+    "window_end",
+}
+
+
 class ScheduleRepository:
     def __init__(
         self,
@@ -111,6 +123,49 @@ class ScheduleRepository:
         if row is None:
             raise ScheduleNotFoundError(schedule_id)
         return _schedule_from_row(row)
+
+    def update(self, schedule_id: str, **changes: Any) -> ScheduleRecord:
+        invalid = set(changes) - PATCHABLE_FIELDS
+        if invalid:
+            raise ValueError(f"unsupported schedule fields: {sorted(invalid)}")
+        schedule = self.get(schedule_id)
+        if schedule.status not in {"ready", "failed"}:
+            raise ScheduleNotEditableError(schedule.status)
+        if not changes:
+            return schedule
+        if "content_id" in changes and changes["content_id"] is not None:
+            self.content_repository.get(changes["content_id"])
+        assignments = [f"{field} = %s" for field in changes]
+        values = [*changes.values(), schedule_id]
+        with psycopg.connect(self.database_url) as connection:
+            row = connection.execute(
+                f"""
+                UPDATE schedule_items
+                SET {", ".join(assignments)},
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE schedule_id = %s
+                RETURNING schedule_id, account_id, content_id, window_start, window_end,
+                    status, task_id, error_code, created_at, updated_at
+                """,
+                values,
+            ).fetchone()
+        if row is None:
+            raise ScheduleNotFoundError(schedule_id)
+        return _schedule_from_row(row)
+
+    def delete(self, schedule_id: str) -> None:
+        self.get(schedule_id)
+        with psycopg.connect(self.database_url) as connection:
+            deleted = connection.execute(
+                """
+                DELETE FROM schedule_items
+                WHERE schedule_id = %s
+                RETURNING schedule_id
+                """,
+                (schedule_id,),
+            ).fetchone()
+        if deleted is None:
+            raise ScheduleNotFoundError(schedule_id)
 
     def publish_immediate(
         self,
