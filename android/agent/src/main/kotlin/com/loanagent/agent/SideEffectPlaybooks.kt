@@ -222,26 +222,64 @@ class ReplyCommentPlaybook : Playbook {
 
         val selectors = buildList {
             command.stringParam("input_selector")?.let(::add)
+            add("text=留下你的想法吧")
             add("text=有话要说，快来评论")
             add("text=让大家听到你的声音")
             add("text=说点什么")
+            add("text=说点什么…")
+            add("text=留下你的评论吧")
             command.stringParam("alt_input_selector")?.let(::add)
         }
 
-        fun tryType(): Boolean = selectors.any { runtime.setText(it, text, timeoutMs = 8_000) }
+        fun tryType(): Boolean {
+            if (selectors.any { runtime.setText(it, text, timeoutMs = 4_000) }) return true
+            // After focus, placeholders often clear — match EditText by class.
+            if (runtime.setText("className=android.widget.EditText", text, timeoutMs = 6_000)) {
+                return true
+            }
+            return runtime.setText("className=android.widget.EditText;clickable=true", text, timeoutMs = 4_000)
+        }
+
+        fun openComposer(): Boolean {
+            val labels = listOf(
+                "留下你的想法吧",
+                "有话要说，快来评论",
+                "让大家听到你的声音",
+                "说点什么",
+                "说点什么…",
+            )
+            for (label in labels) {
+                if (runtime.click("text=$label", allowFinal = false, timeoutMs = 2_000) ||
+                    runtime.clickTextContaining(label.take(4), timeoutMs = 2_000)
+                ) {
+                    runtime.sleep(900)
+                    return true
+                }
+            }
+            val tapX = command.intParam("composer_tap_x", 350)
+            val tapY = command.intParam("composer_tap_y", 1900)
+            if (runtime.tap(tapX, tapY)) {
+                runtime.sleep(900)
+                return true
+            }
+            return false
+        }
 
         if (!tryType()) {
-            val tapX = command.intParam("composer_tap_x", 393)
-            val tapY = command.intParam("composer_tap_y", 494)
-            if (!runtime.tap(tapX, tapY)) {
-                return PlaybookResult.failed(taskId, "SET_TEXT_FAILED")
-            }
-            runtime.sleep(1_200)
+            openComposer()
             if (!tryType()) {
-                return if (knownCommentSurface || hint == PageHint.COMMENTS || hint == PageHint.UNKNOWN) {
-                    PlaybookResult.failed(taskId, "SET_TEXT_FAILED")
-                } else {
-                    PlaybookResult.failed(taskId, "WRONG_PAGE")
+                // Note-detail bottom bar sits around y≈1900 on Note 12 Turbo.
+                runtime.tap(350, 1906)
+                runtime.sleep(1_000)
+                openComposer()
+                if (!tryType()) {
+                    return if (knownCommentSurface || hint == PageHint.COMMENTS || hint == PageHint.UNKNOWN ||
+                        hint == PageHint.NOTE_DETAIL
+                    ) {
+                        PlaybookResult.failed(taskId, "SET_TEXT_FAILED")
+                    } else {
+                        PlaybookResult.failed(taskId, "WRONG_PAGE")
+                    }
                 }
             }
         }
@@ -272,28 +310,41 @@ class ReplyDmPlaybook : Playbook {
         }
         val titleHint = command.stringParam("open_title_hint")
             ?: command.stringParam("thread_title")
-        val pageBefore = runtime.currentPageHint()
-        val composerReady = pageBefore == PageHint.INBOX || pageBefore == PageHint.UNKNOWN ||
-            pageBefore == null
-        if (titleHint != null) {
-            val nav = SurfaceNavigator.goDmThread(runtime, titleHint)
-            if (nav is NavResult.Failed) {
-                return PlaybookResult.failed(taskId, nav.errorCode)
+        val alreadyOpen = runtime.looksLikeOpenDmThreadSurface()
+        if (!alreadyOpen) {
+            val pageBefore = runtime.currentPageHint()
+            val composerReady = pageBefore == PageHint.INBOX || pageBefore == PageHint.UNKNOWN ||
+                pageBefore == null
+            if (titleHint != null) {
+                val nav = SurfaceNavigator.goDmThread(runtime, titleHint)
+                if (nav is NavResult.Failed) {
+                    return PlaybookResult.failed(taskId, nav.errorCode)
+                }
+            } else if (!composerReady) {
+                return PlaybookResult.failed(taskId, "NAV_MISSING_HINT")
+            } else if (pageBefore != PageHint.INBOX && pageBefore != PageHint.UNKNOWN && pageBefore != null) {
+                return PlaybookResult.failed(taskId, "WRONG_PAGE")
             }
-        } else if (!composerReady) {
-            return PlaybookResult.failed(taskId, "NAV_MISSING_HINT")
-        } else if (pageBefore != PageHint.INBOX && pageBefore != PageHint.UNKNOWN && pageBefore != null) {
-            return PlaybookResult.failed(taskId, "WRONG_PAGE")
         }
         val hint = runtime.currentPageHint()
-        val inputSelector = command.stringParam("input_selector") ?: "text=发消息…"
-        if (!runtime.setText(inputSelector, text, timeoutMs = 12_000) &&
-            !runtime.setText("text=发消息", text, timeoutMs = 8_000)
-        ) {
-            return if (hint == PageHint.INBOX || hint == PageHint.UNKNOWN) {
-                PlaybookResult.failed(taskId, "SET_TEXT_FAILED")
-            } else {
-                PlaybookResult.failed(taskId, "WRONG_PAGE")
+        val inputSelectors = listOf(
+            command.stringParam("input_selector") ?: "text=发消息…",
+            "text=发消息",
+            "text=发送消息",
+            "text=请输入消息",
+            "className=android.widget.EditText",
+        )
+        fun tryType(): Boolean = inputSelectors.any { runtime.setText(it, text, timeoutMs = 5_000) }
+        if (!tryType()) {
+            // Composer may need a tap before ACTION_SET_TEXT on some skins.
+            runtime.tap(command.intParam("composer_tap_x", 540), command.intParam("composer_tap_y", 2200))
+            runtime.sleep(800)
+            if (!tryType()) {
+                return if (hint == PageHint.INBOX || hint == PageHint.UNKNOWN || alreadyOpen) {
+                    PlaybookResult.failed(taskId, "SET_TEXT_FAILED")
+                } else {
+                    PlaybookResult.failed(taskId, "WRONG_PAGE")
+                }
             }
         }
         runtime.sleep(400)

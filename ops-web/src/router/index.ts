@@ -25,7 +25,7 @@ const router = createRouter({
         { path: 'accounts', name: 'accounts', component: () => import('@/views/AccountsView.vue'), meta: { title: '账号与设备' } },
         { path: 'devices', redirect: { name: 'accounts' } },
         { path: 'tasks', name: 'tasks', component: () => import('@/views/TasksView.vue'), meta: { title: '任务' } },
-        { path: 'alerts', name: 'alerts', component: () => import('@/views/AlertsView.vue'), meta: { title: '告警' } },
+        { path: 'alerts', name: 'alerts', component: () => import('@/views/AlertsView.vue'), meta: { title: '异常' } },
         { path: 'help', name: 'help', component: () => import('@/views/HelpView.vue'), meta: { title: '遇到问题怎么办' } },
       ],
     },

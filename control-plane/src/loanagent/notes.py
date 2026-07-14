@@ -556,6 +556,35 @@ class NotesService:
             source="manual",
         )
 
+    def post_comment(self, note_id: str, text: str) -> TaskRecord:
+        try:
+            assert_clean(text)
+        except ValueError as error:
+            raise NotesComplianceError(str(error)) from error
+        try:
+            reject_plaintext_contact(text)
+        except ContactForbiddenError as error:
+            raise NotesComplianceError(str(error)) from error
+
+        note = self.get_note(note_id)
+        params: dict[str, Any] = {
+            "text": text,
+            "note_id": note.note_id,
+            "input_selector": "text=留下你的想法吧",
+            "composer_tap_x": 350,
+            "composer_tap_y": 1906,
+        }
+        if note.title_summary:
+            params["title_summary"] = note.title_summary
+        if note.xhs_hint:
+            params["xhs_hint"] = note.xhs_hint
+        return self.task_service.create_and_dispatch(
+            account_id=note.account_id,
+            playbook="post_comment@1.0",
+            params=params,
+            source="manual",
+        )
+
     def reply_comment(self, comment_id: str, text: str) -> TaskRecord:
         try:
             assert_clean(text)
@@ -572,9 +601,9 @@ class NotesService:
             "text": text,
             "note_id": note.note_id,
             "comment_id": comment.comment_id,
-            "input_selector": "text=有话要说，快来评论",
-            "composer_tap_x": 393,
-            "composer_tap_y": 494,
+            "input_selector": "text=留下你的想法吧",
+            "composer_tap_x": 350,
+            "composer_tap_y": 1906,
         }
         if note.title_summary:
             params["title_summary"] = note.title_summary

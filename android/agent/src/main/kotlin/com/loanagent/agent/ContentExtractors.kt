@@ -95,17 +95,18 @@ class ContentExtractors(
         for (item in flat) {
             // Author badge marks note-owner comments AND true replies. Only nest the first
             // owner reply under a non-owner root; further owner comments become new roots.
+            val root = currentRoot
             val isReply = item.preferAsReply &&
-                currentRoot != null &&
-                !currentRoot.preferAsReply &&
+                root != null &&
+                !root.preferAsReply &&
                 replyBuffer.isEmpty()
-            if (currentRoot == null || !isReply) {
+            if (root == null || !isReply) {
                 flushRoot()
                 if (roots.size >= maxRoots.coerceAtLeast(0)) break
                 currentRoot = item.copy(replies = emptyList())
             } else {
                 replyBuffer += item.copy(
-                    replyToAuthor = item.replyToAuthor ?: currentRoot?.authorSummary,
+                    replyToAuthor = item.replyToAuthor ?: root.authorSummary,
                     replies = emptyList(),
                     preferAsReply = false,
                 )

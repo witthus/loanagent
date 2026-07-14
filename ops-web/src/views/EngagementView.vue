@@ -83,7 +83,20 @@ function toggleEngager(id: string) {
 function accountLabel(id: string | null | undefined): string {
   if (!id) return '—'
   const found = accounts.value.find((a) => a.account_id === id)
-  return found?.display_name || id
+  return found?.display_name?.trim() || '未命名账号'
+}
+
+const STATUS_LABEL: Record<string, string> = {
+  pending: '待开始',
+  running: '进行中',
+  done: '已完成',
+  stopped: '已停止',
+  failed: '失败',
+}
+
+const MODE_LABEL: Record<string, string> = {
+  auto: '自动',
+  manual: '手动',
 }
 
 onMounted(async () => {
@@ -115,7 +128,7 @@ onMounted(async () => {
             :checked="selectedEngagers.includes(a.account_id)"
             @change="toggleEngager(a.account_id)"
           />
-          {{ a.display_name || a.account_id }}
+          {{ a.display_name?.trim() || '未命名账号' }}
         </label>
       </div>
       <button
@@ -141,8 +154,8 @@ onMounted(async () => {
       </thead>
       <tbody>
         <tr v-for="c in chains" :key="c.chain_id">
-          <td>{{ c.mode || 'auto' }}</td>
-          <td>{{ c.status }}</td>
+          <td>{{ MODE_LABEL[c.mode || 'auto'] || c.mode || '自动' }}</td>
+          <td>{{ STATUS_LABEL[c.status] || c.status }}</td>
           <td>{{ accountLabel(c.account_id) }}</td>
           <td>
             <template v-if="c.engager_account_ids?.length">

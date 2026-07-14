@@ -87,11 +87,7 @@ class InboxSyncPlaybook : Playbook {
         if (openThreads && threads.isNotEmpty()) {
             threads.take(maxOpen).forEachIndexed { index, thread ->
                 val locator = thread.locatorHint
-                val opened = if (locator != null) {
-                    runtime.click(locator, allowFinal = false, timeoutMs = 5_000)
-                } else {
-                    runtime.clickTextContaining(thread.titleSummary, timeoutMs = 5_000)
-                }
+                val opened = openInboxThread(runtime, thread.titleSummary, locator)
                 if (opened) {
                     runtime.sleep(1_000)
                     if (runtime.looksLikeOpenDmThreadSurface()) {
@@ -122,6 +118,31 @@ class InboxSyncPlaybook : Playbook {
             "threads" to threadPayloads,
         )
         return PlaybookResult.succeeded(taskId, resultPayload = payload)
+    }
+
+    private fun openInboxThread(
+        runtime: PlaybookRuntime,
+        titleSummary: String,
+        locator: String?,
+    ): Boolean {
+        if (locator != null && runtime.click(locator, allowFinal = false, timeoutMs = 4_000)) {
+            return true
+        }
+        // Extractor locators look like "index=17;center=363,629" and are not strict selectors.
+        val center = locator?.let { CENTER_IN_LOCATOR.find(it) }
+        if (center != null) {
+            val x = center.groupValues[1].toIntOrNull()
+            val y = center.groupValues[2].toIntOrNull()
+            if (x != null && y != null && runtime.tap(x, y)) {
+                return true
+            }
+        }
+        return runtime.clickTextContaining(titleSummary, timeoutMs = 5_000) ||
+            runtime.click("text=$titleSummary", allowFinal = false, timeoutMs = 3_000)
+    }
+
+    companion object {
+        private val CENTER_IN_LOCATOR = Regex("""center=(\d+),(\d+)""")
     }
 }
 
@@ -196,15 +217,19 @@ class InboxOpenThreadPlaybook : Playbook {
         if (messages.isEmpty()) {
             return PlaybookResult.failed(taskId, "EXTRACT_EMPTY")
         }
-        val payload = mapOf(
-            "kind" to "thread",
-            "messages" to messages.map { message ->
-                mapOf(
-                    "sender_summary" to message.senderSummary,
-                    "body_summary" to message.bodySummary,
-                )
-            },
-        )
+        val payload = buildMap {
+            put("kind", "thread")
+            command.stringParam("thread_id")?.let { put("thread_id", it) }
+            put(
+                "messages",
+                messages.map { message ->
+                    mapOf(
+                        "sender_summary" to message.senderSummary,
+                        "body_summary" to message.bodySummary,
+                    )
+                },
+            )
+        }
         return PlaybookResult.succeeded(taskId, resultPayload = payload)
     }
 }

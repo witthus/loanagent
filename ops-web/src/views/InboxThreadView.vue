@@ -23,6 +23,7 @@ const replyText = ref('')
 const message = ref('')
 const error = ref('')
 const sending = ref(false)
+const opening = ref(false)
 const { status, errorCode, poll } = useTaskPoll()
 
 function parseErrorCode(body: string): string | null {
@@ -36,6 +37,31 @@ function parseErrorCode(body: string): string | null {
 
 async function loadMessages() {
   messages.value = await api<Message[]>(`/api/v1/inbox/threads/${threadId.value}/messages`)
+}
+
+async function openThreadOnDevice() {
+  opening.value = true
+  error.value = ''
+  message.value = ''
+  try {
+    const task = await api<{ task_id: string }>(
+      `/api/v1/inbox/threads/${threadId.value}/open`,
+      { method: 'POST' },
+    )
+    message.value = '正在打开会话并拉取消息…'
+    const final = await poll(task.task_id)
+    if (final?.status === 'succeeded') {
+      message.value = '会话消息已更新'
+      await loadMessages()
+    } else {
+      const human = humanizeError(final?.error_code || errorCode.value)
+      error.value = `${human.title}。${human.nextStep}`
+    }
+  } catch (err) {
+    error.value = err instanceof ApiError ? err.body : '打开会话失败'
+  } finally {
+    opening.value = false
+  }
 }
 
 async function sendReply() {
@@ -75,10 +101,15 @@ async function sendReply() {
   }
 }
 
-onMounted(() => {
-  loadMessages().catch(() => {
+onMounted(async () => {
+  try {
+    await loadMessages()
+    if (!messages.value.length) {
+      await openThreadOnDevice()
+    }
+  } catch {
     error.value = '加载消息失败'
-  })
+  }
 })
 </script>
 
@@ -88,12 +119,18 @@ onMounted(() => {
       <router-link to="/inbox">← 返回私信列表</router-link>
     </p>
     <h1>私信会话</h1>
+    <div class="toolbar">
+      <button type="button" class="secondary" :disabled="opening" @click="openThreadOnDevice">
+        {{ opening ? '拉取中…' : '从手机打开并同步消息' }}
+      </button>
+    </div>
     <div class="thread">
       <article v-for="m in messages" :key="m.message_id" class="bubble">
         <header>{{ m.sender_summary || '对方' }}</header>
         <p>{{ m.body_summary || '（无内容）' }}</p>
         <time class="muted">{{ m.posted_at_text || m.created_at }}</time>
       </article>
+      <p v-if="!messages.length && !opening" class="empty">暂无消息，可点上方按钮从手机拉取。</p>
     </div>
     <form class="panel" @submit.prevent="sendReply">
       <label>
@@ -114,6 +151,7 @@ onMounted(() => {
 <style scoped>
 .back { margin: 0 0 12px; }
 .back a { color: #2d6a4f; text-decoration: none; font-weight: 600; }
+.toolbar { margin-bottom: 12px; }
 .thread { display: flex; flex-direction: column; gap: 10px; margin-bottom: 20px; }
 .bubble {
   background: #fff;
@@ -123,6 +161,7 @@ onMounted(() => {
 }
 .bubble header { font-weight: 600; margin-bottom: 6px; }
 .bubble p { margin: 0 0 6px; }
+.empty { color: #5c6770; }
 .panel {
   max-width: 560px;
   background: #fff;
@@ -136,6 +175,7 @@ label { display: flex; flex-direction: column; gap: 6px; font-weight: 600; }
 textarea, button { padding: 10px 12px; border-radius: 8px; font: inherit; }
 textarea { border: 1px solid #d0d5dd; }
 button { background: #2d6a4f; color: #fff; border: 0; font-weight: 600; cursor: pointer; align-self: flex-start; }
+button.secondary { background: #344054; }
 button:disabled { opacity: 0.6; cursor: not-allowed; }
 .muted { color: #5c6770; margin: 0; font-size: 0.85rem; }
 .ok { color: #2d6a4f; margin: 0; }

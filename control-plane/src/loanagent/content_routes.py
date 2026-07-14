@@ -83,18 +83,27 @@ def download_media(
     exp: str | None = Query(default=None),
     sig: str | None = Query(default=None),
 ) -> Response:
+    """Allow signed agent downloads, or ops session cookie for ops-web image preview."""
     media_repo = _media_repository(request)
     try:
-        media_repo.verify_signature(media_id, exp=exp or "", sig=sig or "")
+        if exp and sig:
+            media_repo.verify_signature(media_id, exp=exp, sig=sig)
+        else:
+            require_ops(request, creds=None)
         record = media_repo.get(media_id)
     except MediaSignatureError as error:
         raise _http_error(401, "INVALID_SIGNATURE", "Download signature is invalid.") from error
+    except HTTPException:
+        raise
     except MediaNotFoundError as error:
         raise _http_error(404, "MEDIA_NOT_FOUND", "Media does not exist.") from error
+    path = media_repo.resolve_path(record)
+    if not path.is_file():
+        raise _http_error(404, "MEDIA_FILE_MISSING", "Media file is missing on disk.")
     return FileResponse(
-        path=record.storage_path,
+        path=str(path),
         media_type=record.content_type,
-        filename=record.storage_path.rsplit("/", 1)[-1],
+        filename=path.name,
     )
 
 

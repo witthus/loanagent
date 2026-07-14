@@ -147,6 +147,21 @@ def sync_inbox(payload: InboxSyncPayload, request: Request) -> dict:
     return asdict(task)
 
 
+@router.post("/inbox/threads/{thread_id}/open", dependencies=[Depends(require_ops)])
+def open_inbox_thread(thread_id: str, request: Request) -> dict:
+    try:
+        task = _inbox_service(request).open_thread(thread_id)
+    except InboxThreadNotFoundError as error:
+        raise _http_error(
+            404,
+            "THREAD_NOT_FOUND",
+            "Inbox thread does not exist.",
+        ) from error
+    except Exception as error:
+        raise _map_task_error(error) from error
+    return asdict(task)
+
+
 @router.post("/inbox/reply", dependencies=[Depends(require_ops)])
 def reply_inbox(payload: InboxReplyPayload, request: Request) -> dict:
     try:

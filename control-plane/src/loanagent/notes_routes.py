@@ -77,6 +77,19 @@ def list_note_comments(note_id: str, request: Request) -> list[dict]:
     return [asdict(comment) for comment in comments]
 
 
+@router.post("/notes/{note_id}/comments", dependencies=[Depends(require_ops)])
+def post_note_comment(note_id: str, payload: CommentReplyPayload, request: Request) -> dict:
+    try:
+        task = _notes_service(request).post_comment(note_id, payload.text)
+    except NoteNotFoundError as error:
+        raise _http_error(404, "NOTE_NOT_FOUND", "Published note does not exist.") from error
+    except NotesComplianceError as error:
+        raise _http_error(400, "COMPLIANCE_REJECTED", str(error)) from error
+    except Exception as error:
+        raise _map_task_error(error) from error
+    return asdict(task)
+
+
 @router.post("/comments/{comment_id}/reply", dependencies=[Depends(require_ops)])
 def reply_comment(comment_id: str, payload: CommentReplyPayload, request: Request) -> dict:
     try:

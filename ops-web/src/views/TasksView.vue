@@ -1,7 +1,15 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { api } from '@/lib/api'
 import { humanizeError } from '@/lib/humanize'
+import {
+  buildAccountNameMap,
+  formatDateTime,
+  playbookLabel,
+  taskStatusLabel,
+  type AccountLike,
+} from '@/lib/labels'
 
 type Task = {
   task_id: string
@@ -10,19 +18,73 @@ type Task = {
   account_id: string
   error_code: string | null
   created_at: string
+  updated_at?: string
 }
 
-const rows = ref<Task[]>([])
+const PAGE_SIZE = 20
+const route = useRoute()
+const router = useRouter()
+const allRows = ref<Task[]>([])
+const accountNames = ref<Record<string, string>>({})
 const expanded = ref<Record<string, boolean>>({})
 const error = ref('')
+const page = ref(1)
+
+const focusTaskId = computed(() => (route.query.task_id as string) || '')
+
+const sortedRows = computed(() =>
+  [...allRows.value].sort((a, b) => {
+    const ta = new Date(a.created_at).getTime()
+    const tb = new Date(b.created_at).getTime()
+    return tb - ta
+  }),
+)
+
+const focusedRows = computed(() => {
+  if (!focusTaskId.value) return sortedRows.value
+  return sortedRows.value.filter((row) => row.task_id === focusTaskId.value)
+})
+
+const totalPages = computed(() =>
+  Math.max(1, Math.ceil(focusedRows.value.length / PAGE_SIZE)),
+)
+
+const pageRows = computed(() => {
+  if (focusTaskId.value) return focusedRows.value
+  const start = (page.value - 1) * PAGE_SIZE
+  return focusedRows.value.slice(start, start + PAGE_SIZE)
+})
 
 function toggle(taskId: string) {
   expanded.value[taskId] = !expanded.value[taskId]
 }
 
+function accountName(accountId: string): string {
+  return accountNames.value[accountId] || '未命名账号'
+}
+
+function clearFocus() {
+  router.push({ name: 'tasks' })
+}
+
+watch(focusTaskId, (id) => {
+  page.value = 1
+  if (id) expanded.value[id] = true
+})
+
+watch(totalPages, (n) => {
+  if (page.value > n) page.value = n
+})
+
 onMounted(async () => {
   try {
-    rows.value = await api<Task[]>('/api/v1/tasks')
+    const [tasks, accounts] = await Promise.all([
+      api<Task[]>('/api/v1/tasks'),
+      api<AccountLike[]>('/api/v1/accounts?platform=xhs'),
+    ])
+    allRows.value = tasks
+    accountNames.value = buildAccountNameMap(accounts)
+    if (focusTaskId.value) expanded.value[focusTaskId.value] = true
   } catch {
     error.value = '加载任务失败'
   }
@@ -32,48 +94,61 @@ onMounted(async () => {
 <template>
   <section>
     <h1>任务</h1>
+    <p v-if="focusTaskId" class="focus-banner">
+      正在查看单条异常任务
+      <button type="button" class="link-btn" @click="clearFocus">返回全部任务</button>
+    </p>
     <p v-if="error" class="error">{{ error }}</p>
-    <table v-else>
-      <thead>
-        <tr>
-          <th>任务 ID</th>
-          <th>状态</th>
-          <th>Playbook</th>
-          <th>账号</th>
-          <th>创建时间</th>
-          <th>错误</th>
-        </tr>
-      </thead>
-      <tbody>
-        <template v-for="row in rows" :key="row.task_id">
+    <template v-else>
+      <table>
+        <thead>
           <tr>
-            <td>{{ row.task_id }}</td>
-            <td>{{ row.status }}</td>
-            <td>{{ row.playbook }}</td>
-            <td>{{ row.account_id }}</td>
-            <td>{{ row.created_at }}</td>
-            <td>
-              <button
-                v-if="row.error_code"
-                type="button"
-                class="link-btn"
-                @click="toggle(row.task_id)"
-              >
-                {{ expanded[row.task_id] ? '收起' : '展开' }}
-              </button>
-              <span v-else>—</span>
-            </td>
+            <th>下发时间</th>
+            <th>状态</th>
+            <th>任务类型</th>
+            <th>账号</th>
+            <th>说明</th>
           </tr>
-          <tr v-if="row.error_code && expanded[row.task_id]" class="detail">
-            <td colspan="6">
-              <strong>错误码：</strong>{{ row.error_code }}
-              <p>{{ humanizeError(row.error_code).title }} — {{ humanizeError(row.error_code).detail }}</p>
-              <p class="muted">{{ humanizeError(row.error_code).nextStep }}</p>
-            </td>
+        </thead>
+        <tbody>
+          <template v-for="row in pageRows" :key="row.task_id">
+            <tr>
+              <td>{{ formatDateTime(row.created_at) }}</td>
+              <td>{{ taskStatusLabel(row.status) }}</td>
+              <td>{{ playbookLabel(row.playbook) }}</td>
+              <td>{{ accountName(row.account_id) }}</td>
+              <td>
+                <button
+                  v-if="row.error_code"
+                  type="button"
+                  class="link-btn"
+                  @click="toggle(row.task_id)"
+                >
+                  {{ expanded[row.task_id] ? '收起异常' : '查看异常' }}
+                </button>
+                <span v-else class="ok">正常</span>
+              </td>
+            </tr>
+            <tr v-if="row.error_code && expanded[row.task_id]" class="detail">
+              <td colspan="5">
+                <p><strong>异常说明：</strong>{{ humanizeError(row.error_code).title }}</p>
+                <p>{{ humanizeError(row.error_code).detail }}</p>
+                <p class="muted">建议：{{ humanizeError(row.error_code).nextStep }}</p>
+                <p class="muted">系统代码：{{ row.error_code }}</p>
+              </td>
+            </tr>
+          </template>
+          <tr v-if="!pageRows.length">
+            <td colspan="5" class="empty">暂无任务。</td>
           </tr>
-        </template>
-      </tbody>
-    </table>
+        </tbody>
+      </table>
+      <div v-if="!focusTaskId && focusedRows.length > PAGE_SIZE" class="pager">
+        <button type="button" :disabled="page <= 1" @click="page -= 1">上一页</button>
+        <span>第 {{ page }} / {{ totalPages }} 页（共 {{ focusedRows.length }} 条，每页 {{ PAGE_SIZE }} 条）</span>
+        <button type="button" :disabled="page >= totalPages" @click="page += 1">下一页</button>
+      </div>
+    </template>
   </section>
 </template>
 
@@ -91,5 +166,31 @@ th { background: #f3f4f6; }
   padding: 0;
 }
 .muted { color: #5c6770; margin: 4px 0 0; }
+.ok { color: #067647; }
 .error { color: #b42318; }
+.empty { color: #5c6770; }
+.focus-banner {
+  background: #fff7ed;
+  border: 1px solid #fdba74;
+  border-radius: 8px;
+  padding: 10px 14px;
+  display: flex;
+  gap: 16px;
+  align-items: center;
+}
+.pager {
+  display: flex;
+  gap: 16px;
+  align-items: center;
+  margin-top: 14px;
+  color: #5c6770;
+}
+.pager button {
+  border: 1px solid #d0d5dd;
+  background: #fff;
+  border-radius: 8px;
+  padding: 8px 12px;
+  cursor: pointer;
+}
+.pager button:disabled { opacity: 0.5; cursor: default; }
 </style>

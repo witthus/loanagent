@@ -252,7 +252,13 @@ class M0AndroidBoundaryTest {
         }
 
         assertFalse(service.globalBack(lease))
-        assertEquals("UNSAFE_GLOBAL_ACTION_BLOCKED", service.lastGlobalActionBoundaryStatus)
+        if (BuildConfig.DEBUG) {
+            // Debug allows BACK (playbook note-sheet exit); Robolectric has no active window
+            // so the action still returns false, but it is not blocked by kiosk policy.
+            assertEquals(null, service.lastGlobalActionBoundaryStatus)
+        } else {
+            assertEquals("UNSAFE_GLOBAL_ACTION_BLOCKED", service.lastGlobalActionBoundaryStatus)
+        }
     }
 
     @Test

@@ -102,7 +102,7 @@ onMounted(async () => {
         账号
         <select v-model="accountId" @change="onAccountChange">
           <option v-for="a in accounts" :key="a.account_id" :value="a.account_id">
-            {{ a.display_name || a.account_id }}
+            {{ a.display_name?.trim() || '未命名账号' }}
           </option>
         </select>
       </label>

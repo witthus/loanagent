@@ -3,6 +3,7 @@ import { onMounted, ref } from 'vue'
 import { zhCN } from '@/i18n/zh-CN'
 import { api } from '@/lib/api'
 import { buildTodoItems, type TodoItem } from '@/lib/todoAggregate'
+import { buildAccountNameMap, formatDateTime, type AccountLike } from '@/lib/labels'
 import { DEFAULT_PLATFORM } from '@/platform'
 
 const loading = ref(true)
@@ -11,23 +12,34 @@ const items = ref<TodoItem[]>([])
 
 onMounted(async () => {
   try {
-    const [threads, schedules, alerts, tasks, notes, leads] = await Promise.all([
+    const [threads, schedules, alerts, tasks, notes, leads, accounts] = await Promise.all([
       api<any[]>(`/api/v1/inbox/threads`).catch(() => []),
       api<any[]>(`/api/v1/schedules`).catch(() => []),
       api<any[]>(`/api/v1/alerts`).catch(() => []),
       api<any[]>(`/api/v1/tasks`).catch(() => []),
       api<any[]>(`/api/v1/notes`).catch(() => []),
       api<any[]>(`/api/v1/inbox/leads`).catch(() => []),
+      api<AccountLike[]>(`/api/v1/accounts?platform=xhs`).catch(() => []),
     ])
+    const accountNames = buildAccountNameMap(accounts || [])
+    const failed = (tasks || [])
+      .filter((t: any) => t.status === 'failed')
+      .sort(
+        (a: any, b: any) =>
+          new Date(b.updated_at || b.created_at || 0).getTime() -
+          new Date(a.updated_at || a.created_at || 0).getTime(),
+      )
+      .slice(0, 5)
     items.value = buildTodoItems({
       threads,
       schedules,
       alerts,
-      failedTasks: (tasks || []).filter((t: any) => t.status === 'failed').slice(0, 5),
+      failedTasks: failed,
       notes: (notes || []).slice(0, 5),
       leads,
+      accountNames,
     })
-  } catch (err) {
+  } catch {
     error.value = '加载待办失败，请刷新重试。'
   } finally {
     loading.value = false
@@ -47,6 +59,7 @@ onMounted(async () => {
         <div>
           <strong>{{ item.title }}</strong>
           <p>{{ item.subtitle }}</p>
+          <p class="time">时间：{{ formatDateTime(item.at) }}</p>
         </div>
         <router-link class="btn" :to="item.to">{{ item.actionLabel }}</router-link>
       </li>
@@ -67,6 +80,7 @@ h1 { margin: 0 0 8px; font-size: 1.6rem; }
 .list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 12px; }
 .card { display: flex; justify-content: space-between; align-items: center; gap: 16px; border: 1px solid #e5e7eb; }
 .card p { margin: 6px 0 0; color: #5c6770; }
+.time { font-size: 0.9rem; }
 .btn {
   flex-shrink: 0;
   background: #2d6a4f;

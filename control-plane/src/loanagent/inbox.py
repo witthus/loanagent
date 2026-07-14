@@ -87,6 +87,20 @@ class InboxService:
     ) -> list[InboxThreadRecord]:
         results: list[InboxThreadRecord] = []
         with psycopg.connect(self.database_url) as connection:
+            # Preserve lead status across replace by matching title_summary.
+            saved_leads = connection.execute(
+                """
+                SELECT t.title_summary, l.status, l.note
+                FROM leads l
+                JOIN inbox_threads t ON t.thread_id = l.thread_id
+                WHERE t.account_id = %s
+                """,
+                (account_id,),
+            ).fetchall()
+            leads_by_title = {
+                str(row[0]): (str(row[1]), row[2]) for row in saved_leads
+            }
+
             # Successful inbox sync replaces the account thread list; stale false positives go away.
             connection.execute(
                 """
@@ -163,6 +177,20 @@ class InboxService:
                             created_at=thread.created_at,
                             updated_at=thread.updated_at,
                         )
+                saved = leads_by_title.get(title_summary)
+                if saved is not None:
+                    status, note = saved
+                    connection.execute(
+                        """
+                        INSERT INTO leads (lead_id, thread_id, status, note)
+                        VALUES (%s, %s, %s, %s)
+                        ON CONFLICT (thread_id) DO UPDATE SET
+                            status = EXCLUDED.status,
+                            note = EXCLUDED.note,
+                            updated_at = CURRENT_TIMESTAMP
+                        """,
+                        (str(uuid4()), thread.thread_id, status, note),
+                    )
                 results.append(thread)
         return results
 
@@ -305,6 +333,19 @@ class InboxService:
             playbook="inbox_sync@1.0",
             # List first is reliable; opening every thread is flaky on mid-swipe surfaces.
             params={"max_items": 20, "max_threads": 5, "open_threads": True},
+            source="manual",
+        )
+
+    def open_thread(self, thread_id: str) -> TaskRecord:
+        thread = self.get_thread(thread_id)
+        return self.task_service.create_and_dispatch(
+            account_id=thread.account_id,
+            playbook="inbox_open_thread@1.0",
+            params={
+                "thread_id": thread.thread_id,
+                "open_title_hint": thread.title_summary,
+                "max_items": 50,
+            },
             source="manual",
         )
 

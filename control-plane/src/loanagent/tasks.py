@@ -200,7 +200,7 @@ class TaskService:
                     timeout_sec, source, error_code, created_at, updated_at
                 FROM tasks
                 {where}
-                ORDER BY created_at, task_id
+                ORDER BY created_at DESC, task_id DESC
                 """,
                 values,
             ).fetchall()
@@ -338,7 +338,8 @@ class TaskService:
             from loanagent.inbox import InboxService, InboxThreadNotFoundError
 
             inbox = InboxService(self.database_url, self)
-            thread_id = result_payload.get("thread_id")
+            params = task.params if isinstance(task.params, Mapping) else {}
+            thread_id = result_payload.get("thread_id") or params.get("thread_id")
             messages = list(
                 result_payload.get("messages") or result_payload.get("items") or []
             )

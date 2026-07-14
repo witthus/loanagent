@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { api, ApiError } from '@/lib/api'
+import { mediaPreviewUrl } from '@/lib/labels'
 import { DEFAULT_PLATFORM } from '@/platform'
 
 type Content = {
@@ -12,6 +13,7 @@ type Content = {
   platform: string
 }
 
+const PAGE_SIZE = 10
 const rows = ref<Content[]>([])
 const editingId = ref<string | null>(null)
 const title = ref('')
@@ -21,9 +23,18 @@ const uploading = ref(false)
 const message = ref('')
 const error = ref('')
 const saving = ref(false)
+const page = ref(1)
+const previewIndex = ref<number | null>(null)
+
+const totalPages = computed(() => Math.max(1, Math.ceil(rows.value.length / PAGE_SIZE)))
+const pageRows = computed(() => {
+  const start = (page.value - 1) * PAGE_SIZE
+  return rows.value.slice(start, start + PAGE_SIZE)
+})
 
 async function load() {
   rows.value = await api<Content[]>('/api/v1/content?platform=xhs')
+  if (page.value > totalPages.value) page.value = totalPages.value
 }
 
 function resetForm() {
@@ -31,6 +42,7 @@ function resetForm() {
   title.value = ''
   body.value = ''
   mediaIds.value = []
+  previewIndex.value = null
 }
 
 function startEdit(row: Content) {
@@ -38,8 +50,10 @@ function startEdit(row: Content) {
   title.value = row.title
   body.value = row.body
   mediaIds.value = [...(row.media_ids || [])]
+  previewIndex.value = null
   message.value = ''
   error.value = ''
+  window.scrollTo({ top: 0, behavior: 'smooth' })
 }
 
 async function uploadFiles(event: Event) {
@@ -136,12 +150,17 @@ onMounted(() => {
         图片（可多选）
         <input type="file" accept="image/*" multiple :disabled="uploading" @change="uploadFiles" />
       </label>
-      <ul v-if="mediaIds.length" class="media-list">
-        <li v-for="id in mediaIds" :key="id">
-          <code>{{ id.slice(0, 8) }}…</code>
-          <button type="button" class="link" @click="removeMedia(id)">移除</button>
-        </li>
-      </ul>
+      <div v-if="mediaIds.length" class="media-grid">
+        <figure v-for="(id, index) in mediaIds" :key="id" class="media-card">
+          <button type="button" class="thumb" @click="previewIndex = index">
+            <img :src="mediaPreviewUrl(id)" :alt="`素材图片 ${index + 1}`" />
+          </button>
+          <figcaption>
+            <span>图片 {{ index + 1 }}</span>
+            <button type="button" class="link" @click="removeMedia(id)">移除</button>
+          </figcaption>
+        </figure>
+      </div>
       <div class="actions">
         <button type="submit" :disabled="saving || uploading">
           {{ saving ? '保存中…' : editingId ? '保存修改' : '保存素材' }}
@@ -151,12 +170,18 @@ onMounted(() => {
       <p v-if="message" class="ok">{{ message }}</p>
       <p v-if="error" class="error">{{ error }}</p>
     </form>
+
+    <div v-if="previewIndex != null && mediaIds[previewIndex]" class="lightbox" @click.self="previewIndex = null">
+      <button type="button" class="close" @click="previewIndex = null">关闭</button>
+      <img :src="mediaPreviewUrl(mediaIds[previewIndex])" alt="素材大图" />
+    </div>
+
     <table>
       <thead>
         <tr><th>标题</th><th>图片</th><th>敏感词</th><th>操作</th></tr>
       </thead>
       <tbody>
-        <tr v-for="row in rows" :key="row.content_id">
+        <tr v-for="row in pageRows" :key="row.content_id">
           <td>{{ row.title }}</td>
           <td>{{ (row.media_ids || []).length }} 张</td>
           <td>{{ row.sensitivity_status === 'clean' ? '通过' : '需改写' }}</td>
@@ -165,8 +190,16 @@ onMounted(() => {
             <button type="button" class="link danger" @click="deleteContent(row)">删除</button>
           </td>
         </tr>
+        <tr v-if="!pageRows.length">
+          <td colspan="4" class="empty">暂无素材。</td>
+        </tr>
       </tbody>
     </table>
+    <div v-if="rows.length > PAGE_SIZE" class="pager">
+      <button type="button" :disabled="page <= 1" @click="page -= 1">上一页</button>
+      <span>第 {{ page }} / {{ totalPages }} 页（共 {{ rows.length }} 条，每页 {{ PAGE_SIZE }} 条）</span>
+      <button type="button" :disabled="page >= totalPages" @click="page += 1">下一页</button>
+    </div>
   </section>
 </template>
 
@@ -184,8 +217,36 @@ h2 { margin: 0; font-size: 1.05rem; }
 label { display: flex; flex-direction: column; gap: 6px; font-weight: 600; }
 input, textarea { padding: 10px 12px; border: 1px solid #d0d5dd; border-radius: 8px; font: inherit; }
 .upload input { font-weight: 400; }
-.media-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
-.media-list li { display: flex; gap: 12px; align-items: center; font-size: 0.9rem; }
+.media-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+  gap: 12px;
+}
+.media-card { margin: 0; }
+.thumb {
+  display: block;
+  width: 100%;
+  padding: 0;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  overflow: hidden;
+  background: #f3f4f6;
+  cursor: zoom-in;
+}
+.thumb img {
+  display: block;
+  width: 100%;
+  aspect-ratio: 1;
+  object-fit: cover;
+}
+.media-card figcaption {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: 6px;
+  font-size: 0.85rem;
+  font-weight: 400;
+}
 .actions { display: flex; gap: 10px; }
 button { align-self: flex-start; background: #2d6a4f; color: #fff; border: 0; border-radius: 8px; padding: 10px 16px; font-weight: 600; cursor: pointer; }
 button.secondary { background: #667085; }
@@ -198,4 +259,44 @@ th { background: #f3f4f6; }
 .ops { display: flex; gap: 12px; }
 .ok { color: #2d6a4f; margin: 0; }
 .error { color: #b42318; margin: 0; }
+.empty { color: #5c6770; }
+.pager {
+  display: flex;
+  gap: 16px;
+  align-items: center;
+  margin-top: 14px;
+  color: #5c6770;
+}
+.pager button {
+  border: 1px solid #d0d5dd;
+  background: #fff;
+  color: #111;
+  border-radius: 8px;
+  padding: 8px 12px;
+}
+.pager button:disabled { opacity: 0.5; cursor: default; }
+.lightbox {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.72);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 40;
+  padding: 24px;
+}
+.lightbox img {
+  max-width: min(920px, 100%);
+  max-height: 85vh;
+  object-fit: contain;
+  border-radius: 8px;
+  background: #111;
+}
+.lightbox .close {
+  position: absolute;
+  top: 20px;
+  right: 20px;
+  background: #fff;
+  color: #111;
+}
 </style>

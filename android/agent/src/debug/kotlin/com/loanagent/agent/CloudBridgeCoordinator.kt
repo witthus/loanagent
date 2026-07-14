@@ -21,12 +21,10 @@ class AccessibilityPlaybookRuntime(
     override fun accessibilityAlive(): Boolean = M0AccessibilityService.instance != null
 
     override fun launchXhs(): Boolean {
+        // Prefer CLEAR_TASK while XHS is already focused. GLOBAL_ACTION_HOME then
+        // startActivity is blocked on HyperOS as a background activity start.
         val launch = context.packageManager.getLaunchIntentForPackage("com.xingin.xhs") ?: return false
-        launch.addFlags(
-            Intent.FLAG_ACTIVITY_NEW_TASK or
-                Intent.FLAG_ACTIVITY_CLEAR_TOP or
-                Intent.FLAG_ACTIVITY_SINGLE_TOP,
-        )
+        launch.flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK
         return try {
             context.startActivity(launch)
             true

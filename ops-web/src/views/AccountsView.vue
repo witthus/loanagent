@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { api } from '@/lib/api'
+import { accountDisplayName, roleLabel } from '@/lib/labels'
 import { humanizeError } from '@/lib/humanize'
 import { platformLabel, type Platform } from '@/platform'
 
@@ -28,16 +29,24 @@ type Row = {
   device: Device | null
 }
 
-const ROLE_LABEL: Record<string, string> = {
-  PUBLISHER_MAIN: '主号',
-  PUBLISHER_MATRIX: '矩阵号',
-  ENGAGER: '互动号',
-}
-
 const rows = ref<Row[]>([])
+const allDevices = ref<Device[]>([])
+const allAccounts = ref<Account[]>([])
 const error = ref('')
 const saving = ref<string | null>(null)
 const message = ref('')
+const bindAccountId = ref('')
+const bindDeviceId = ref('')
+
+const unboundAccounts = computed(() =>
+  allAccounts.value.filter((a) => !a.device_id),
+)
+const unboundDevices = computed(() => {
+  const used = new Set(
+    allAccounts.value.map((a) => a.device_id).filter(Boolean) as string[],
+  )
+  return allDevices.value.filter((d) => !used.has(d.device_id))
+})
 
 function deviceStatus(device: Device | null): string {
   if (!device) return '未绑定设备'
@@ -48,12 +57,12 @@ function deviceStatus(device: Device | null): string {
 
 function accountLabel(account: Account | null): string {
   if (!account) return '未绑定账号'
-  return account.display_name || account.account_id
+  return accountDisplayName(account)
 }
 
 function deviceLabel(device: Device | null): string {
   if (!device) return '—'
-  return device.display_name || device.device_id
+  return device.display_name?.trim() || '未命名设备'
 }
 
 async function load() {
@@ -63,6 +72,8 @@ async function load() {
       api<Device[]>('/api/v1/devices'),
       api<Account[]>('/api/v1/accounts?platform=xhs'),
     ])
+    allDevices.value = devices
+    allAccounts.value = accounts
     const byDevice = new Map<string, Account>()
     for (const account of accounts) {
       if (account.device_id) byDevice.set(account.device_id, account)
@@ -79,13 +90,19 @@ async function load() {
       }
     }
     rows.value = merged
+    if (!bindAccountId.value && unboundAccounts.value[0]) {
+      bindAccountId.value = unboundAccounts.value[0].account_id
+    }
+    if (!bindDeviceId.value && unboundDevices.value[0]) {
+      bindDeviceId.value = unboundDevices.value[0].device_id
+    }
   } catch {
     error.value = '加载账号与设备失败'
   }
 }
 
 async function renameAccount(account: Account) {
-  const next = window.prompt('账号显示名称', account.display_name || account.account_id)
+  const next = window.prompt('账号显示名称', account.display_name || '')
   if (next == null) return
   const trimmed = next.trim()
   if (!trimmed || trimmed === (account.display_name || '')) return
@@ -106,7 +123,7 @@ async function renameAccount(account: Account) {
 }
 
 async function renameDevice(device: Device) {
-  const next = window.prompt('设备显示名称', device.display_name || device.device_id)
+  const next = window.prompt('设备显示名称', device.display_name || '')
   if (next == null) return
   const trimmed = next.trim()
   if (!trimmed || trimmed === (device.display_name || '')) return
@@ -126,16 +143,86 @@ async function renameDevice(device: Device) {
   }
 }
 
+async function bindAccountDevice() {
+  if (!bindAccountId.value || !bindDeviceId.value) {
+    error.value = '请选择账号和设备'
+    return
+  }
+  saving.value = 'bind'
+  message.value = ''
+  error.value = ''
+  try {
+    await api(`/api/v1/accounts/${encodeURIComponent(bindAccountId.value)}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ device_id: bindDeviceId.value }),
+    })
+    message.value = '账号与设备已绑定'
+    bindAccountId.value = ''
+    bindDeviceId.value = ''
+    await load()
+  } catch {
+    error.value = '绑定失败（设备可能已被其他账号占用）'
+  } finally {
+    saving.value = null
+  }
+}
+
+async function unbindAccount(account: Account) {
+  if (!window.confirm(`解除「${accountDisplayName(account)}」与设备的绑定？`)) return
+  saving.value = `unbind:${account.account_id}`
+  message.value = ''
+  error.value = ''
+  try {
+    await api(`/api/v1/accounts/${encodeURIComponent(account.account_id)}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ device_id: null }),
+    })
+    message.value = '已解除绑定'
+    await load()
+  } catch {
+    error.value = '解除绑定失败'
+  } finally {
+    saving.value = null
+  }
+}
+
 onMounted(load)
 </script>
 
 <template>
   <section>
     <h1>账号与设备</h1>
-    <p class="hint">一台手机绑定一个账号。可在这里改显示名称。</p>
+    <p class="hint">一台手机绑定一个账号。可在这里改显示名称，或绑定/解绑设备。</p>
     <p v-if="message" class="ok">{{ message }}</p>
     <p v-if="error" class="error">{{ error }}</p>
-    <table v-else>
+
+    <div v-if="unboundAccounts.length && unboundDevices.length" class="bind-panel">
+      <h2>绑定账号与设备</h2>
+      <div class="bind-row">
+        <label>
+          未绑定账号
+          <select v-model="bindAccountId">
+            <option v-for="a in unboundAccounts" :key="a.account_id" :value="a.account_id">
+              {{ accountDisplayName(a) }}
+            </option>
+          </select>
+        </label>
+        <label>
+          未绑定设备
+          <select v-model="bindDeviceId">
+            <option v-for="d in unboundDevices" :key="d.device_id" :value="d.device_id">
+              {{ d.display_name?.trim() || d.device_id }}
+              {{ d.online ? '（在线）' : '（离线）' }}
+            </option>
+          </select>
+        </label>
+        <button type="button" :disabled="saving === 'bind'" @click="bindAccountDevice">
+          {{ saving === 'bind' ? '绑定中…' : '绑定' }}
+        </button>
+      </div>
+    </div>
+
+    <table>
       <thead>
         <tr>
           <th>账号</th>
@@ -150,11 +237,10 @@ onMounted(load)
       <tbody>
         <tr v-for="(row, index) in rows" :key="row.account?.account_id || row.device?.device_id || index">
           <td>{{ accountLabel(row.account) }}</td>
-          <td>{{ row.account ? (ROLE_LABEL[row.account.role] || row.account.role) : '—' }}</td>
+          <td>{{ row.account ? roleLabel(row.account.role) : '—' }}</td>
           <td>{{ row.account ? platformLabel(row.account.platform || 'xhs') : '—' }}</td>
           <td>
             <div>{{ deviceLabel(row.device) }}</div>
-            <div v-if="row.device?.display_name" class="muted">{{ row.device.device_id }}</div>
           </td>
           <td>{{ deviceStatus(row.device) }}</td>
           <td>
@@ -183,6 +269,14 @@ onMounted(load)
             >
               改设备名
             </button>
+            <button
+              v-if="row.account?.device_id"
+              type="button"
+              :disabled="saving === `unbind:${row.account.account_id}`"
+              @click="unbindAccount(row.account)"
+            >
+              解绑
+            </button>
           </td>
         </tr>
       </tbody>
@@ -197,7 +291,18 @@ th { background: #f3f4f6; }
 .error { color: #b42318; }
 .ok { color: #067647; }
 .hint { color: #5c6770; margin: 0 0 12px; }
-.muted { color: #8a94a6; font-size: 12px; margin-top: 4px; }
+.bind-panel {
+  background: #fff;
+  border-radius: 12px;
+  padding: 16px 18px;
+  margin-bottom: 16px;
+  max-width: 720px;
+}
+.bind-panel h2 { margin: 0 0 12px; font-size: 1rem; }
+.bind-row { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end; }
+.bind-row label { display: flex; flex-direction: column; gap: 6px; font-weight: 600; min-width: 180px; }
+.bind-row select, .bind-row button { padding: 8px 12px; border-radius: 8px; font: inherit; }
+.bind-row button { background: #2d6a4f; color: #fff; border: 0; font-weight: 600; cursor: pointer; }
 .actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .actions button {
   border: 1px solid #d0d5dd;

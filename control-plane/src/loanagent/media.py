@@ -89,9 +89,19 @@ class MediaRepository:
     def save_file(self, storage_path: str, data: bytes) -> None:
         atomic_write_mode_0600(Path(storage_path), data)
 
+    def resolve_path(self, record: "MediaRecord") -> Path:
+        primary = Path(record.storage_path)
+        if primary.is_file():
+            return primary
+        # Recover when MEDIA_ROOT moved but DB still has an older absolute path.
+        fallback = self.media_root / primary.name
+        if fallback.is_file():
+            return fallback
+        return primary
+
     def read_bytes(self, media_id: str) -> bytes:
         record = self.get(media_id)
-        return Path(record.storage_path).read_bytes()
+        return self.resolve_path(record).read_bytes()
 
     def signed_download_path(self, media_id: str) -> str:
         return f"/api/v1/media/{media_id}/download"

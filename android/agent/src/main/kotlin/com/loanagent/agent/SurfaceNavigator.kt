@@ -15,6 +15,7 @@ sealed class NavResult {
 object SurfaceNavigator {
     private const val MIN_MATCH_LEN = 4
     private const val BACK_LIMIT = 4
+    private val CENTER_IN_LOCATOR = Regex("""center=(\d+),(\d+)""")
 
     fun ensureForeground(runtime: PlaybookRuntime): NavResult {
         if (!runtime.accessibilityAlive()) return NavResult.Failed("A11Y_DOWN")
@@ -29,21 +30,67 @@ object SurfaceNavigator {
 
     fun goInbox(runtime: PlaybookRuntime): NavResult {
         ensureForeground(runtime).let { if (it is NavResult.Failed) return it }
-        // After comments/publish the pager is often mid-swipe; force a home reset first.
-        resetTowardHome(runtime)
-        runtime.sleep(600)
+        val startHint = runtime.currentPageHint()
+        // From note/comment sheets, backs alone are unreliable — jump to Index home first.
+        if (startHint == PageHint.NOTE_DETAIL || startHint == PageHint.COMMENTS) {
+            runtime.launchXhs()
+            if (!runtime.waitForXhsForeground(12_000)) {
+                return NavResult.Failed("XHS_NOT_FOREGROUND")
+            }
+            if (!waitForMainTabs(runtime)) {
+                // Fall back to backs if CLEAR_TASK did not drop the note sheet.
+                resetTowardHome(runtime)
+            }
+        } else {
+            resetTowardHome(runtime)
+            runtime.sleep(600)
+        }
         if (onInboxSurface(runtime)) return NavResult.Ok
-        if (clickMessageTab(runtime)) {
-            runtime.sleep(1_200)
+        if (hasMainBottomTabs(runtime) && clickMessageTab(runtime)) {
+            runtime.sleep(1_400)
             if (onInboxSurface(runtime)) return NavResult.Ok
         }
-        resetTowardHome(runtime)
-        if (clickMessageTab(runtime)) {
+        runtime.launchXhs()
+        if (!runtime.waitForXhsForeground(12_000)) {
+            return NavResult.Failed("XHS_NOT_FOREGROUND")
+        }
+        waitForMainTabs(runtime)
+        if (hasMainBottomTabs(runtime) && clickMessageTab(runtime)) {
+            runtime.sleep(1_800)
+            if (onInboxSurface(runtime)) return NavResult.Ok
+        }
+        if (hasMainBottomTabs(runtime)) {
+            runtime.tap(756, 2294)
             runtime.sleep(1_500)
             if (onInboxSurface(runtime)) return NavResult.Ok
         }
         return NavResult.Failed("NAV_TIMEOUT")
     }
+
+    private fun waitForMainTabs(runtime: PlaybookRuntime, timeoutMs: Long = 8_000): Boolean {
+        val deadline = System.currentTimeMillis() + timeoutMs
+        while (System.currentTimeMillis() < deadline) {
+            val hint = runtime.currentPageHint()
+            if (
+                hint != PageHint.NOTE_DETAIL &&
+                hint != PageHint.COMMENTS &&
+                hasMainBottomTabs(runtime)
+            ) {
+                runtime.sleep(400)
+                return true
+            }
+            runtime.sleep(350)
+        }
+        return hasMainBottomTabs(runtime) &&
+            runtime.currentPageHint() != PageHint.NOTE_DETAIL &&
+            runtime.currentPageHint() != PageHint.COMMENTS
+    }
+
+    // Accept hub chrome even when PageHint flickers (profile bleed / short 赞收藏 terms).
+    private fun onInboxSurface(runtime: PlaybookRuntime): Boolean =
+        runtime.currentPageHint() == PageHint.INBOX ||
+            runtime.looksLikeInboxListSurface() ||
+            looksLikeInboxHub(runtime)
 
     fun goProfile(runtime: PlaybookRuntime): NavResult {
         ensureForeground(runtime).let { if (it is NavResult.Failed) return it }
@@ -66,9 +113,6 @@ object SurfaceNavigator {
         runtime.sleep(800)
     }
 
-    private fun onInboxSurface(runtime: PlaybookRuntime): Boolean =
-        runtime.currentPageHint() == PageHint.INBOX || runtime.looksLikeInboxListSurface()
-
     fun goDmThread(runtime: PlaybookRuntime, openTitleHint: String?): NavResult {
         val hint = openTitleHint?.trim()?.takeIf { it.isNotEmpty() }
             ?: return NavResult.Failed("NAV_MISSING_HINT")
@@ -78,17 +122,38 @@ object SurfaceNavigator {
             titlesMatch(hint, thread.titleSummary) || titlesMatch(hint, thread.previewSummary)
         } ?: return NavResult.Failed("NAV_TARGET_NOT_FOUND")
         val locator = matched.locatorHint
-        val opened = when {
-            locator != null && runtime.click(locator, allowFinal = false, timeoutMs = 6_000) -> true
-            runtime.clickTextContaining(matched.titleSummary, timeoutMs = 6_000) -> true
-            runtime.clickTextContaining(hint, timeoutMs = 6_000) -> true
-            runtime.click("text=${matched.titleSummary}", allowFinal = false, timeoutMs = 4_000) -> true
-            else -> tapNodeContaining(runtime, hint) ||
-                tapNodeContaining(runtime, matched.titleSummary)
-        }
+        val opened = openThreadByLocatorOrTitle(runtime, matched.titleSummary, hint, locator)
         if (!opened) return NavResult.Failed("NAV_TARGET_NOT_FOUND")
         runtime.sleep(1_000)
         return NavResult.Ok
+    }
+
+    private fun openThreadByLocatorOrTitle(
+        runtime: PlaybookRuntime,
+        titleSummary: String,
+        hint: String,
+        locator: String?,
+    ): Boolean {
+        // Prefer center= taps; "index=N;center=x,y" is not a StrictSelector.
+        val center = locator?.let { CENTER_IN_LOCATOR.find(it) }
+        if (center != null) {
+            val x = center.groupValues[1].toIntOrNull()
+            val y = center.groupValues[2].toIntOrNull()
+            if (x != null && y != null && runtime.tap(x, y)) {
+                return true
+            }
+        }
+        if (locator != null &&
+            !locator.contains("center=") &&
+            runtime.click(locator, allowFinal = false, timeoutMs = 4_000)
+        ) {
+            return true
+        }
+        return runtime.clickTextContaining(titleSummary, timeoutMs = 6_000) ||
+            runtime.clickTextContaining(hint, timeoutMs = 6_000) ||
+            runtime.click("text=$titleSummary", allowFinal = false, timeoutMs = 4_000) ||
+            tapNodeContaining(runtime, hint) ||
+            tapNodeContaining(runtime, titleSummary)
     }
 
     fun goNoteComments(
@@ -361,18 +426,44 @@ object SurfaceNavigator {
             runtime.clickTextContaining("消息", timeoutMs = 3_000)
 
     private fun resetTowardHome(runtime: PlaybookRuntime) {
+        // Note detail / comment sheets hide the real bottom tabs. Absolute taps at
+        // tab coordinates hit note action chrome (赞/收藏/评论) instead — back out first.
+        // ViewPager can still bleed 首页/消息 nodes into the note tree, so never trust
+        // tab chrome while page_hint is NOTE_DETAIL or COMMENTS.
         var backs = 0
-        while (backs < BACK_LIMIT &&
-            runtime.currentPageHint() != PageHint.HOME &&
-            runtime.currentPageHint() != PageHint.INBOX
-        ) {
-            runtime.globalBack()
-            runtime.sleep(400)
-            backs += 1
+        while (backs < 10) {
+            val hint = runtime.currentPageHint()
+            if (hint == PageHint.HOME || hint == PageHint.INBOX) break
+            if (hint == PageHint.NOTE_DETAIL || hint == PageHint.COMMENTS || !hasMainBottomTabs(runtime)) {
+                runtime.globalBack()
+                runtime.sleep(450)
+                backs += 1
+                continue
+            }
+            break
         }
-        runtime.click("contentDescription=首页", allowFinal = false, timeoutMs = 3_000) ||
-            runtime.click("text=首页", allowFinal = false, timeoutMs = 3_000)
-        runtime.sleep(600)
+        if (
+            !hasMainBottomTabs(runtime) ||
+            runtime.currentPageHint() == PageHint.NOTE_DETAIL ||
+            runtime.currentPageHint() == PageHint.COMMENTS
+        ) {
+            runtime.launchXhs()
+            runtime.waitForXhsForeground(12_000)
+            runtime.sleep(900)
+        }
+        if (runtime.currentPageHint() != PageHint.HOME && runtime.currentPageHint() != PageHint.INBOX) {
+            runtime.click("contentDescription=首页", allowFinal = false, timeoutMs = 3_000) ||
+                runtime.click("text=首页", allowFinal = false, timeoutMs = 3_000) ||
+                (hasMainBottomTabs(runtime) && runtime.tap(108, 2294))
+            runtime.sleep(600)
+        }
+    }
+
+    private fun hasMainBottomTabs(runtime: PlaybookRuntime): Boolean {
+        val hint = runtime.currentPageHint()
+        if (hint == PageHint.NOTE_DETAIL || hint == PageHint.COMMENTS) return false
+        val blob = surfaceBlob(runtime)
+        return blob.contains("首页") && (blob.contains("消息") || blob.contains("市集"))
     }
 
     private fun openCommentsChrome(runtime: PlaybookRuntime) {

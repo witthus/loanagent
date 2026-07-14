@@ -375,6 +375,40 @@ class ContentExtractorsTest {
     }
 
     @Test
+    fun nestsOnlyFirstAuthorReplyUnderGuestWhenAllOwnerCommentsHaveAuthorBadge() {
+        // Live XHS order (oldest first): guest root, owner reply, then more owner
+        // top-level comments that also carry the 「作者」 badge.
+        val nodes = listOf(
+            UiNode(text = "静生百慧茶叶馆", clickable = true),
+            UiNode(text = "这个茶叶多钱？ M0CAP-190713"),
+            UiNode(text = "2天前 湖北 回复"),
+            UiNode(text = "逾期不候", clickable = true),
+            UiNode(text = "作者"),
+            UiNode(text = "感谢首评！这泡岩韵出来后回甘比较清楚，欢迎继续交流品鉴。"),
+            UiNode(text = "2天前 湖北 回复"),
+            UiNode(text = "逾期不候", clickable = true),
+            UiNode(text = "作者"),
+            UiNode(text = "云测评论输入"),
+            UiNode(text = "昨天 01:10 湖北 回复"),
+            UiNode(text = "逾期不候", clickable = true),
+            UiNode(text = "作者"),
+            UiNode(text = "云测评论回复请忽略-1783876597"),
+            UiNode(text = "昨天 01:17 湖北 回复"),
+        )
+        val items = extractor.extractComments(nodes, maxItems = 10)
+        assertEquals(3, items.size)
+        assertEquals("静生百慧茶叶馆", items[0].authorSummary)
+        assertEquals(1, items[0].replies.size)
+        assertTrue(items[0].replies[0].bodySummary.contains("感谢首评"))
+        assertEquals("云测评论输入", items[1].bodySummary)
+        assertEquals("昨天 01:10 湖北", items[1].postedAtText)
+        assertEquals(0, items[1].replies.size)
+        assertEquals("云测评论回复请忽略-1783876597", items[2].bodySummary)
+        assertEquals("昨天 01:17 湖北", items[2].postedAtText)
+        assertEquals(0, items[2].replies.size)
+    }
+
+    @Test
     fun extractsProfileNotesWithLikeCollectAndReadCounts() {
         val nodes = listOf(
             UiNode(text = "编辑主页"),

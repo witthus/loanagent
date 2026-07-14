@@ -312,7 +312,9 @@ class M0AccessibilityService :
     }
 
     override fun globalBack(expectedLease: TargetLease): Boolean {
-        if (!trustedKiosk.isTrustedKiosk()) {
+        // Release builds require Device Owner / trusted kiosk. Debug agent allows BACK so
+        // playbooks can leave note/comment sheets on lab devices without DPC.
+        if (!BuildConfig.DEBUG && !trustedKiosk.isTrustedKiosk()) {
             lastGlobalActionBoundaryStatus = "UNSAFE_GLOBAL_ACTION_BLOCKED"
             return false
         }

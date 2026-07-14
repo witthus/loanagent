@@ -19,7 +19,7 @@ export const zhCN = {
     accounts: '账号与设备',
     devices: '账号与设备',
     tasks: '任务',
-    alerts: '告警',
+    alerts: '异常',
     help: '遇到问题怎么办',
     logout: '退出',
     daily: '日常工作',

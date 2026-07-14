@@ -36,10 +36,12 @@ const comments = ref<Comment[]>([])
 const accountId = ref('')
 const noteId = ref('')
 const replyDrafts = ref<Record<string, string>>({})
+const newCommentText = ref('')
 const message = ref('')
 const error = ref('')
 const syncingNotes = ref(false)
 const syncingComments = ref(false)
+const postingComment = ref(false)
 const replyingId = ref<string | null>(null)
 const { status, errorCode, poll } = useTaskPoll()
 
@@ -124,6 +126,37 @@ async function syncComments() {
   }
 }
 
+async function postNewComment() {
+  const text = newCommentText.value.trim()
+  if (!text || !noteId.value) return
+  postingComment.value = true
+  error.value = ''
+  message.value = ''
+  try {
+    const task = await api<{ task_id: string }>(`/api/v1/notes/${noteId.value}/comments`, {
+      method: 'POST',
+      body: JSON.stringify({ text }),
+    })
+    message.value = '已提交评论，正在等待手机执行…'
+    const final = await poll(task.task_id)
+    if (final?.status === 'succeeded') {
+      message.value = '评论已发送'
+      newCommentText.value = ''
+    } else {
+      const human = humanizeError(final?.error_code || errorCode.value)
+      error.value = `${human.title}。${human.nextStep}`
+    }
+  } catch (err) {
+    if (err instanceof ApiError && err.body.includes('COMPLIANCE_REJECTED')) {
+      error.value = '评论内容未通过合规检查，请改写后再试。'
+    } else {
+      error.value = err instanceof ApiError ? err.body : '发表评论失败'
+    }
+  } finally {
+    postingComment.value = false
+  }
+}
+
 async function replyComment(commentId: string) {
   const text = (replyDrafts.value[commentId] || '').trim()
   if (!text) return
@@ -204,7 +237,7 @@ onMounted(async () => {
         账号
         <select v-model="accountId">
           <option v-for="a in accounts" :key="a.account_id" :value="a.account_id">
-            {{ a.display_name || a.account_id }}
+            {{ a.display_name?.trim() || '未命名账号' }}
           </option>
         </select>
       </label>
@@ -235,6 +268,20 @@ onMounted(async () => {
       <button type="button" :disabled="!noteId || syncingComments" @click="syncComments">
         {{ syncingComments ? '同步评论中…' : '同步最新评论' }}
       </button>
+      <form v-if="noteId" class="post-form" @submit.prevent="postNewComment">
+        <label>
+          发表新评论（自己评论）
+          <textarea
+            v-model="newCommentText"
+            rows="2"
+            maxlength="4000"
+            placeholder="输入要发到该笔记下的评论…"
+          />
+        </label>
+        <button type="submit" :disabled="postingComment || !newCommentText.trim()">
+          {{ postingComment ? '发送中…' : '发表评论' }}
+        </button>
+      </form>
       <p class="hint">默认显示数据库缓存；同步会与手机对账，并保留评论层级与时间。</p>
       <p v-if="status" class="muted">任务状态：{{ status }}</p>
       <p v-if="message" class="ok">{{ message }}</p>
@@ -283,6 +330,13 @@ onMounted(async () => {
   flex-direction: column;
   gap: 14px;
   margin-bottom: 20px;
+}
+.post-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-top: 8px;
+  border-top: 1px solid #e5e7eb;
 }
 .row { display: flex; gap: 10px; }
 .align-end { align-items: flex-end; }
