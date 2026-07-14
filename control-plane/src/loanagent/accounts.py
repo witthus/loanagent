@@ -20,6 +20,7 @@ PATCHABLE_FIELDS = {
     "inbox_sync_enabled",
     "display_name",
     "platform",
+    "role",
 }
 
 
@@ -145,6 +146,8 @@ class AccountRepository:
             raise ValueError("daily_publish_quota must not be negative")
         if "platform" in changes:
             changes["platform"] = normalize_platform(changes["platform"])
+        if "role" in changes:
+            changes["role"] = AccountRole(changes["role"]).value
         if not changes:
             return self.get(account_id)
 
@@ -177,6 +180,84 @@ class AccountRepository:
 
     def resume(self, account_id: str) -> AccountRecord:
         return self.update(account_id, status="active")
+
+    def delete(self, account_id: str) -> None:
+        """Remove account and account-scoped history; device row is kept unbound."""
+        self.get(account_id)
+        with psycopg.connect(self.database_url) as connection:
+            connection.execute(
+                """
+                DELETE FROM leads
+                WHERE thread_id IN (
+                    SELECT thread_id FROM inbox_threads WHERE account_id = %s
+                )
+                """,
+                (account_id,),
+            )
+            connection.execute(
+                """
+                DELETE FROM inbox_messages
+                WHERE thread_id IN (
+                    SELECT thread_id FROM inbox_threads WHERE account_id = %s
+                )
+                """,
+                (account_id,),
+            )
+            connection.execute(
+                "DELETE FROM inbox_threads WHERE account_id = %s",
+                (account_id,),
+            )
+            connection.execute(
+                """
+                DELETE FROM note_comment_nodes
+                WHERE account_id = %s
+                   OR note_id IN (
+                        SELECT note_id FROM published_notes WHERE account_id = %s
+                   )
+                """,
+                (account_id, account_id),
+            )
+            connection.execute(
+                """
+                DELETE FROM note_comments
+                WHERE account_id = %s
+                   OR note_id IN (
+                        SELECT note_id FROM published_notes WHERE account_id = %s
+                   )
+                """,
+                (account_id, account_id),
+            )
+            connection.execute(
+                "DELETE FROM published_notes WHERE account_id = %s",
+                (account_id,),
+            )
+            connection.execute(
+                "DELETE FROM schedule_items WHERE account_id = %s",
+                (account_id,),
+            )
+            connection.execute(
+                """
+                DELETE FROM engagement_chains
+                WHERE account_id = %s
+                   OR engager_account_id = %s
+                   OR engager_account_ids ? %s
+                """,
+                (account_id, account_id, account_id),
+            )
+            connection.execute(
+                "DELETE FROM tasks WHERE account_id = %s",
+                (account_id,),
+            )
+            deleted = connection.execute(
+                """
+                DELETE FROM accounts
+                WHERE account_id = %s
+                RETURNING account_id
+                """,
+                (account_id,),
+            ).fetchone()
+        if deleted is None:
+            raise AccountNotFoundError(account_id)
 
     @staticmethod
     def _validate_account_id(account_id: str) -> None:

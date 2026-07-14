@@ -24,12 +24,29 @@ type Account = {
   display_name?: string | null
   platform: Platform
   daily_publish_quota?: number
+  network_policy?: string
+  inbox_sync_enabled?: boolean
 }
 
 type Row = {
   account: Account
   device: Device | null
 }
+
+type EditDraft = {
+  account_id: string
+  display_name: string
+  role: string
+  daily_publish_quota: number
+  network_policy: string
+  inbox_sync_enabled: boolean
+}
+
+const ROLE_OPTIONS = [
+  { value: 'PUBLISHER_MAIN', label: '主号' },
+  { value: 'PUBLISHER_MATRIX', label: '矩阵号' },
+  { value: 'ENGAGER', label: '互动号' },
+] as const
 
 const rows = ref<Row[]>([])
 const allDevices = ref<Device[]>([])
@@ -38,6 +55,7 @@ const devicesById = ref<Record<string, Device>>({})
 const error = ref('')
 const saving = ref<string | null>(null)
 const message = ref('')
+const editing = ref<EditDraft | null>(null)
 let refreshTimer: number | null = null
 let loadGeneration = 0
 
@@ -95,22 +113,73 @@ async function load() {
   }
 }
 
-async function renameAccount(account: Account) {
-  const next = window.prompt('账号显示名称', account.display_name || '')
-  if (next == null) return
-  const trimmed = next.trim()
-  if (!trimmed || trimmed === (account.display_name || '')) return
-  saving.value = `account:${account.account_id}`
+function openEdit(account: Account) {
+  editing.value = {
+    account_id: account.account_id,
+    display_name: account.display_name?.trim() || '',
+    role: account.role,
+    daily_publish_quota: account.daily_publish_quota ?? 0,
+    network_policy: account.network_policy || 'cellular_only',
+    inbox_sync_enabled: Boolean(account.inbox_sync_enabled),
+  }
   message.value = ''
+  error.value = ''
+}
+
+function closeEdit() {
+  editing.value = null
+}
+
+async function saveEdit() {
+  const draft = editing.value
+  if (!draft) return
+  const name = draft.display_name.trim()
+  if (!name) {
+    error.value = '请填写账号显示名称'
+    return
+  }
+  saving.value = `edit:${draft.account_id}`
+  message.value = ''
+  error.value = ''
   try {
-    await api(`/api/v1/accounts/${encodeURIComponent(account.account_id)}`, {
+    await api(`/api/v1/accounts/${encodeURIComponent(draft.account_id)}`, {
       method: 'PATCH',
-      body: JSON.stringify({ display_name: trimmed }),
+      body: JSON.stringify({
+        display_name: name,
+        role: draft.role,
+        daily_publish_quota: Number(draft.daily_publish_quota) || 0,
+        network_policy: draft.network_policy,
+        inbox_sync_enabled: draft.inbox_sync_enabled,
+      }),
     })
-    message.value = '账号名称已更新'
+    message.value = '账号已更新'
+    editing.value = null
     await load()
   } catch (err) {
-    error.value = formatApiError(err, '更新账号名称失败')
+    error.value = formatApiError(err, '更新账号失败')
+  } finally {
+    saving.value = null
+  }
+}
+
+async function deleteAccount(account: Account) {
+  const name = accountDisplayName(account)
+  const bound = account.device_id
+    ? '\n将解除与设备的绑定，并删除该账号下的任务/私信/笔记等历史数据。'
+    : '\n将删除该账号下的任务/私信/笔记等历史数据。'
+  if (!window.confirm(`删除账号「${name}」？${bound}\n此操作不可恢复。`)) return
+  saving.value = `delete:${account.account_id}`
+  message.value = ''
+  error.value = ''
+  try {
+    await api(`/api/v1/accounts/${encodeURIComponent(account.account_id)}`, {
+      method: 'DELETE',
+    })
+    if (editing.value?.account_id === account.account_id) editing.value = null
+    message.value = '账号已删除'
+    await load()
+  } catch (err) {
+    error.value = formatApiError(err, '删除账号失败')
   } finally {
     saving.value = null
   }
@@ -186,7 +255,7 @@ onUnmounted(() => {
   <section>
     <h1>账号</h1>
     <p class="hint">
-      管理账号角色、暂停与解绑。装包、待绑定设备、改设备名请到
+      管理账号名称、角色、暂停、解绑与删除。装包、待绑定设备、改设备名请到
       <router-link to="/devices">设备</router-link>
       页。页面每 15 秒自动刷新。
     </p>
@@ -205,6 +274,51 @@ onUnmounted(() => {
     </div>
     <p v-if="message" class="ok">{{ message }}</p>
     <p v-if="error" class="error">{{ error }}</p>
+
+    <div v-if="editing" class="edit-panel">
+      <h2>编辑账号</h2>
+      <p class="muted">ID：{{ editing.account_id }}</p>
+      <div class="edit-grid">
+        <label>
+          显示名称
+          <input v-model="editing.display_name" type="text" maxlength="256" />
+        </label>
+        <label>
+          角色
+          <select v-model="editing.role">
+            <option v-for="opt in ROLE_OPTIONS" :key="opt.value" :value="opt.value">
+              {{ opt.label }}
+            </option>
+          </select>
+        </label>
+        <label>
+          每日发布配额
+          <input v-model.number="editing.daily_publish_quota" type="number" min="0" step="1" />
+        </label>
+        <label>
+          网络策略
+          <select v-model="editing.network_policy">
+            <option value="cellular_only">仅蜂窝</option>
+            <option value="wifi_allowed">允许 Wi‑Fi</option>
+          </select>
+        </label>
+        <label class="checkbox">
+          <input v-model="editing.inbox_sync_enabled" type="checkbox" />
+          启用私信同步
+        </label>
+      </div>
+      <div class="actions">
+        <button
+          type="button"
+          class="primary"
+          :disabled="saving === `edit:${editing.account_id}`"
+          @click="saveEdit"
+        >
+          {{ saving === `edit:${editing.account_id}` ? '保存中…' : '保存' }}
+        </button>
+        <button type="button" :disabled="!!saving" @click="closeEdit">取消</button>
+      </div>
+    </div>
 
     <table>
       <thead>
@@ -242,10 +356,10 @@ onUnmounted(() => {
           <td class="actions">
             <button
               type="button"
-              :disabled="saving === `account:${row.account.account_id}`"
-              @click="renameAccount(row.account)"
+              :disabled="!!saving"
+              @click="openEdit(row.account)"
             >
-              改账号名
+              编辑
             </button>
             <button
               v-if="row.account.status === 'active'"
@@ -271,6 +385,14 @@ onUnmounted(() => {
               @click="unbindAccount(row.account)"
             >
               解绑
+            </button>
+            <button
+              type="button"
+              class="danger"
+              :disabled="saving === `delete:${row.account.account_id}`"
+              @click="deleteAccount(row.account)"
+            >
+              删除
             </button>
           </td>
         </tr>
@@ -314,5 +436,47 @@ th { background: #f3f4f6; }
   color: #fff;
   border-color: #2d6a4f;
 }
+.actions button.danger {
+  color: #b42318;
+  border-color: #fecdca;
+}
 .actions button:disabled { opacity: 0.6; cursor: default; }
+.edit-panel {
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-radius: 12px;
+  padding: 16px 18px;
+  margin-bottom: 16px;
+}
+.edit-panel h2 {
+  margin: 0 0 8px;
+  font-size: 1.05rem;
+}
+.edit-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 12px 16px;
+  margin: 12px 0 14px;
+}
+.edit-grid label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-weight: 600;
+  font-size: 0.9rem;
+}
+.edit-grid input[type='text'],
+.edit-grid input[type='number'],
+.edit-grid select {
+  border: 1px solid #d0d5dd;
+  border-radius: 8px;
+  padding: 8px 10px;
+  font: inherit;
+}
+.edit-grid label.checkbox {
+  flex-direction: row;
+  align-items: center;
+  font-weight: 500;
+  margin-top: 22px;
+}
 </style>

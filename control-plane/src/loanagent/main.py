@@ -164,6 +164,7 @@ class AccountPatchPayload(BaseModel):
     inbox_sync_enabled: bool | None = None
     display_name: str | None = Field(default=None, min_length=1, max_length=256)
     platform: str | None = Field(default=None, min_length=1, max_length=32)
+    role: AccountRole | None = None
 
 
 @app.post("/enroll")
@@ -329,7 +330,10 @@ def patch_account(
 ) -> dict:
     repository: AccountRepository = request.app.state.account_repository
     try:
-        account = repository.update(account_id, **payload.model_dump(exclude_unset=True))
+        changes = payload.model_dump(exclude_unset=True)
+        if "role" in changes and changes["role"] is not None:
+            changes["role"] = AccountRole(changes["role"]).value
+        account = repository.update(account_id, **changes)
     except AccountDeviceAlreadyBoundError as error:
         raise _account_http_error(
             409,
@@ -348,7 +352,23 @@ def patch_account(
             "ACCOUNT_NOT_FOUND",
             "Account does not exist.",
         ) from error
+    except ValueError as error:
+        raise _account_http_error(400, "INVALID_ACCOUNT_PATCH", str(error)) from error
     return asdict(account)
+
+
+@app.delete("/api/v1/accounts/{account_id}", dependencies=[Depends(require_ops)])
+def delete_account(account_id: str, request: Request) -> dict:
+    repository: AccountRepository = request.app.state.account_repository
+    try:
+        repository.delete(account_id)
+    except AccountNotFoundError as error:
+        raise _account_http_error(
+            404,
+            "ACCOUNT_NOT_FOUND",
+            "Account does not exist.",
+        ) from error
+    return {"ok": True, "account_id": account_id}
 
 
 @app.post("/api/v1/accounts/{account_id}/pause", dependencies=[Depends(require_ops)])

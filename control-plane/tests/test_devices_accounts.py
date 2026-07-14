@@ -312,6 +312,7 @@ def test_account_api_patches_pauses_and_resumes_account() -> None:
                 "display_name": "Engager Alpha",
                 "daily_publish_quota": 3,
                 "network_policy": "wifi_allowed",
+                "role": AccountRole.PUBLISHER_MATRIX.value,
             },
         )
         paused = client.post(
@@ -328,10 +329,85 @@ def test_account_api_patches_pauses_and_resumes_account() -> None:
     assert patched.json()["display_name"] == "Engager Alpha"
     assert patched.json()["daily_publish_quota"] == 3
     assert patched.json()["network_policy"] == "wifi_allowed"
+    assert patched.json()["role"] == AccountRole.PUBLISHER_MATRIX.value
     assert paused.status_code == 200
     assert paused.json()["status"] == "paused"
     assert resumed.status_code == 200
     assert resumed.json()["status"] == "active"
+
+
+def test_account_api_deletes_account_and_unbinds_device() -> None:
+    from loanagent.accounts import AccountNotFoundError, AccountRepository
+    from loanagent.devices import DeviceRepository
+    from loanagent.tasks import TaskService
+
+    class RecordingMqttBus:
+        def publish(self, topic: str, payload: dict) -> None:
+            return None
+
+    device_id = unique_id("device-adel")
+    account_id = unique_id("account-adel")
+    DeviceRepository(DATABASE_URL).migrate()
+    DeviceRepository(DATABASE_URL).heartbeat(
+        device_id=device_id,
+        agent_version="0.1.5",
+        a11y_bound=True,
+    )
+
+    with TestClient(app) as client:
+        created = client.post(
+            "/api/v1/accounts",
+            headers=ops_headers(),
+            json={
+                "account_id": account_id,
+                "role": AccountRole.PUBLISHER_MATRIX.value,
+                "device_id": device_id,
+                "display_name": "待删矩阵号",
+            },
+        )
+        assert created.status_code == 200
+
+        service = TaskService(DATABASE_URL, RecordingMqttBus())
+        task = service._insert_queued_task(
+            task_id=unique_id("task-adel"),
+            operation_id=unique_id("op-adel"),
+            device_id=device_id,
+            account_id=account_id,
+            playbook="sync_notes@1.0",
+            params={},
+            effect_class="readonly",
+            priority=100,
+            timeout_sec=120,
+            source="manual",
+        )
+        service._update_status(task.task_id, status="accepted")
+
+        deleted = client.delete(
+            f"/api/v1/accounts/{account_id}",
+            headers=ops_headers(),
+        )
+        assert deleted.status_code == 200
+        assert deleted.json()["ok"] is True
+
+        missing = client.get(
+            f"/api/v1/accounts",
+            headers=ops_headers(),
+        )
+        assert missing.status_code == 200
+        assert account_id not in {row["account_id"] for row in missing.json()}
+
+        device = DeviceRepository(DATABASE_URL).get(device_id)
+        assert device.device_id == device_id
+
+        again = client.delete(
+            f"/api/v1/accounts/{account_id}",
+            headers=ops_headers(),
+        )
+        assert again.status_code == 404
+        assert again.json()["detail"]["code"] == "ACCOUNT_NOT_FOUND"
+
+    with pytest.raises(AccountNotFoundError):
+        AccountRepository(DATABASE_URL).get(account_id)
 
 
 def test_mark_stale_offline_clears_online_flag() -> None:
