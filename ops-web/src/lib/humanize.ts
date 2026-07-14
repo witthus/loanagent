@@ -46,29 +46,9 @@ const MAP: Record<string, HumanMessage> = {
     nextStep: '请管理员在手机上重新登录后再试。',
   },
   DEVICE_UNAVAILABLE: {
-    title: '手机不在线或未绑定',
-    detail: '账号没有可用设备，或手机已掉线。',
-    nextStep: '到「账号」或「设备」检查状态，可暂停账号、终止任务或删除设备后重新绑定。',
-  },
-  DEVICE_DELETED: {
-    title: '设备已删除',
-    detail: '关联任务因设备被删除而取消。',
-    nextStep: '装好新手机并重新绑定账号后再继续。',
-  },
-  DEVICE_OFFLINE_CANCELLED: {
-    title: '任务已终止',
-    detail: '设备掉线后，进行中的任务已被手动终止。',
-    nextStep: '等手机重新上线并确认无障碍后再重试。',
-  },
-  OPERATOR_CANCELLED: {
-    title: '任务已取消',
-    detail: '运营人员取消了该任务。',
-    nextStep: '需要时重新提交即可。',
-  },
-  TASK_ALREADY_TERMINAL: {
-    title: '任务已结束',
-    detail: '该任务已经完成或失败，不能再取消。',
-    nextStep: '在「任务」页查看结果，或重新下发。',
+    title: '绑定的手机当前不可用',
+    detail: '账号没有在线设备，或设备心跳已超时。',
+    nextStep: '打开「设备」确认手机在线，并保持矩阵助手运行。',
   },
   ACCOUNT_UNAVAILABLE: {
     title: '账号当前不可用',

@@ -32,13 +32,10 @@ const filterAccountId = ref('')
 const filterStatus = ref('')
 const expanded = ref<Record<string, boolean>>({})
 const error = ref('')
-const message = ref('')
 const page = ref(1)
 const loading = ref(false)
-const cancelling = ref<string | null>(null)
 let refreshTimer: ReturnType<typeof setInterval> | null = null
 
-const ACTIVE = new Set(['queued', 'accepted', 'executing'])
 const focusTaskId = computed(() => (route.query.task_id as string) || '')
 
 const hasActiveTasks = computed(() =>
@@ -134,22 +131,6 @@ async function loadTasks() {
     loading.value = false
   }
 }
-
-async function cancelTask(taskId: string) {
-  if (!window.confirm('确认取消该进行中的任务？')) return
-  cancelling.value = taskId
-  message.value = ''
-  error.value = ''
-  try {
-    await api(`/api/v1/tasks/${encodeURIComponent(taskId)}/cancel`, { method: 'POST' })
-    message.value = '任务已取消'
-    await loadTasks()
-  } catch {
-    error.value = '取消任务失败（可能已结束）'
-  } finally {
-    cancelling.value = null
-  }
-}
 </script>
 
 <template>
@@ -188,9 +169,8 @@ async function cancelTask(taskId: string) {
         </select>
       </label>
     </div>
-    <p v-if="message" class="ok">{{ message }}</p>
     <p v-if="error" class="error">{{ error }}</p>
-    <template v-if="!error || allRows.length">
+    <template v-else>
       <table>
         <thead>
           <tr>
@@ -208,16 +188,7 @@ async function cancelTask(taskId: string) {
               <td>{{ taskStatusLabel(row.status) }}</td>
               <td>{{ playbookLabel(row.playbook) }}</td>
               <td>{{ accountName(row.account_id) }}</td>
-              <td class="actions-cell">
-                <button
-                  v-if="ACTIVE.has(row.status)"
-                  type="button"
-                  class="link-btn"
-                  :disabled="cancelling === row.task_id"
-                  @click="cancelTask(row.task_id)"
-                >
-                  {{ cancelling === row.task_id ? '取消中…' : '取消任务' }}
-                </button>
+              <td>
                 <button
                   v-if="row.error_code"
                   type="button"
@@ -226,7 +197,7 @@ async function cancelTask(taskId: string) {
                 >
                   {{ expanded[row.task_id] ? '收起异常' : '查看异常' }}
                 </button>
-                <span v-else-if="!ACTIVE.has(row.status)" class="ok">正常</span>
+                <span v-else class="ok">正常</span>
               </td>
             </tr>
             <tr v-if="row.error_code && expanded[row.task_id]" class="detail">
@@ -290,7 +261,6 @@ th { background: #f3f4f6; }
   font: inherit;
 }
 .link-btn:disabled { opacity: 0.6; cursor: not-allowed; }
-.actions-cell { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
 .filters .refresh { align-self: flex-end; padding-bottom: 8px; }
 .muted { color: #5c6770; margin: 4px 0 0; }
 .ok { color: #067647; }

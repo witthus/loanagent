@@ -201,49 +201,6 @@ class DeviceRepository:
             ).fetchall()
         return len(rows)
 
-    def delete(self, device_id: str) -> None:
-        """Unbind accounts, cancel open tasks, then remove the device row."""
-        self.get(device_id)
-        with psycopg.connect(self.database_url) as connection:
-            connection.execute(
-                """
-                UPDATE accounts
-                SET device_id = NULL,
-                    updated_at = CURRENT_TIMESTAMP
-                WHERE device_id = %s
-                """,
-                (device_id,),
-            )
-            connection.execute(
-                """
-                UPDATE tasks
-                SET status = CASE
-                        WHEN status IN ('queued', 'accepted', 'executing')
-                            THEN 'cancelled'
-                        ELSE status
-                    END,
-                    error_code = CASE
-                        WHEN status IN ('queued', 'accepted', 'executing')
-                            THEN COALESCE(error_code, 'DEVICE_DELETED')
-                        ELSE error_code
-                    END,
-                    device_id = NULL,
-                    updated_at = CURRENT_TIMESTAMP
-                WHERE device_id = %s
-                """,
-                (device_id,),
-            )
-            deleted = connection.execute(
-                """
-                DELETE FROM devices
-                WHERE device_id = %s
-                RETURNING device_id
-                """,
-                (device_id,),
-            ).fetchone()
-        if deleted is None:
-            raise DeviceNotFoundError(device_id)
-
     def update_geo_if_ip_matches(
         self,
         device_id: str,

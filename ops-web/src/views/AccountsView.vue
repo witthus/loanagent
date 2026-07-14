@@ -170,49 +170,6 @@ async function resumeAccount(account: Account) {
   }
 }
 
-async function cancelDeviceTasks(device: Device) {
-  if (!window.confirm(`终止设备「${deviceDisplayName(device)}」上所有进行中的任务？`)) return
-  saving.value = `cancel:${device.device_id}`
-  message.value = ''
-  error.value = ''
-  try {
-    const result = await api<{ cancelled_count: number }>(
-      `/api/v1/devices/${encodeURIComponent(device.device_id)}/cancel-tasks`,
-      { method: 'POST' },
-    )
-    message.value = `已终止 ${result.cancelled_count} 个进行中的任务`
-    await load()
-  } catch (err) {
-    error.value = formatApiError(err, '终止任务失败')
-  } finally {
-    saving.value = null
-  }
-}
-
-async function deleteDevice(device: Device, account: Account | null) {
-  const label = deviceDisplayName(device)
-  const boundHint = account
-    ? `将同时解除与「${accountDisplayName(account)}」的绑定，并终止进行中任务。`
-    : '将终止该设备进行中的任务。'
-  if (!window.confirm(`删除设备「${label}」？\n${boundHint}\n删除后可重新安装 Agent 并绑定。`)) {
-    return
-  }
-  saving.value = `delete:${device.device_id}`
-  message.value = ''
-  error.value = ''
-  try {
-    await api(`/api/v1/devices/${encodeURIComponent(device.device_id)}`, {
-      method: 'DELETE',
-    })
-    message.value = '设备已删除，可重新上线后绑定'
-    await load()
-  } catch (err) {
-    error.value = formatApiError(err, '删除设备失败')
-  } finally {
-    saving.value = null
-  }
-}
-
 onMounted(() => {
   load()
   refreshTimer = window.setInterval(() => {
@@ -229,7 +186,7 @@ onUnmounted(() => {
   <section>
     <h1>账号</h1>
     <p class="hint">
-      管理账号角色、暂停与解绑。掉线时可终止任务或删除设备后重绑。装包、待绑定设备、改设备名请到
+      管理账号角色、暂停与解绑。装包、待绑定设备、改设备名请到
       <router-link to="/devices">设备</router-link>
       页。页面每 15 秒自动刷新。
     </p>
@@ -308,28 +265,12 @@ onUnmounted(() => {
               恢复
             </button>
             <button
-              v-if="row.device"
-              type="button"
-              :disabled="saving === `cancel:${row.device.device_id}`"
-              @click="cancelDeviceTasks(row.device)"
-            >
-              终止任务
-            </button>
-            <button
               v-if="row.account.device_id"
               type="button"
               :disabled="saving === `unbind:${row.account.account_id}`"
               @click="unbindAccount(row.account)"
             >
               解绑
-            </button>
-            <button
-              v-if="row.device"
-              type="button"
-              :disabled="saving === `delete:${row.device.device_id}`"
-              @click="deleteDevice(row.device, row.account)"
-            >
-              删除设备
             </button>
           </td>
         </tr>

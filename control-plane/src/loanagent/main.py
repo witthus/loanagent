@@ -286,42 +286,6 @@ def patch_device(device_id: str, payload: DevicePatchPayload, request: Request) 
         ) from error
 
 
-@app.delete("/api/v1/devices/{device_id}", dependencies=[Depends(require_ops)])
-def delete_device(device_id: str, request: Request) -> dict:
-    repository: DeviceRepository = request.app.state.device_repository
-    try:
-        repository.delete(device_id)
-    except DeviceNotFoundError as error:
-        raise HTTPException(
-            status_code=404,
-            detail={"code": "DEVICE_NOT_FOUND", "message": "Device does not exist."},
-        ) from error
-    return {"ok": True, "device_id": device_id}
-
-
-@app.post(
-    "/api/v1/devices/{device_id}/cancel-tasks",
-    dependencies=[Depends(require_ops)],
-)
-def cancel_device_tasks(device_id: str, request: Request) -> dict:
-    repository: DeviceRepository = request.app.state.device_repository
-    service: TaskService = request.app.state.task_service
-    try:
-        repository.get(device_id)
-    except DeviceNotFoundError as error:
-        raise HTTPException(
-            status_code=404,
-            detail={"code": "DEVICE_NOT_FOUND", "message": "Device does not exist."},
-        ) from error
-    cancelled = service.cancel_open_for_device(device_id)
-    return {
-        "ok": True,
-        "device_id": device_id,
-        "cancelled_count": len(cancelled),
-        "tasks": [asdict(task) for task in cancelled],
-    }
-
-
 @app.post("/api/v1/accounts", dependencies=[Depends(require_ops)])
 def create_account(payload: AccountCreatePayload, request: Request) -> dict:
     repository: AccountRepository = request.app.state.account_repository
