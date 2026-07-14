@@ -1,10 +1,12 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
-import { api, ApiError } from '@/lib/api'
-import { humanizeError } from '@/lib/humanize'
-import { useTaskPoll } from '@/composables/useTaskPoll'
+import { computed, onMounted, ref } from 'vue'
+import { useRoute } from 'vue-router'
+import { api } from '@/lib/api'
+import { formatApiError } from '@/lib/apiError'
+import { useFleetAccounts } from '@/composables/useFleetAccounts'
+import { useSubmittedTasks } from '@/composables/useSubmittedTasks'
+import SubmittedTasksBanner from '@/components/SubmittedTasksBanner.vue'
 
-type Account = { account_id: string; display_name?: string | null; platform: string }
 type Thread = {
   thread_id: string
   account_id: string
@@ -13,21 +15,28 @@ type Thread = {
   unread: boolean
 }
 
-const accounts = ref<Account[]>([])
+const route = useRoute()
+const { accounts, accountNames, loadFleet, optionLabel, runnable } = useFleetAccounts()
 const threads = ref<Thread[]>([])
+/** Empty string = all accounts */
 const accountId = ref('')
 const message = ref('')
 const error = ref('')
 const syncing = ref(false)
 const markingId = ref<string | null>(null)
-const { status, errorCode, poll } = useTaskPoll()
+const { tasks: submittedTasks, track, dismiss, statusText, isRunning } = useSubmittedTasks()
+
+const showAllAccounts = computed(() => !accountId.value)
+
+function accountName(id: string): string {
+  return accountNames.value[id] || '未命名账号'
+}
 
 async function loadThreads() {
-  if (!accountId.value) {
-    threads.value = []
-    return
-  }
-  threads.value = await api<Thread[]>(`/api/v1/inbox/threads?account_id=${encodeURIComponent(accountId.value)}`)
+  const q = accountId.value
+    ? `/api/v1/inbox/threads?account_id=${encodeURIComponent(accountId.value)}`
+    : '/api/v1/inbox/threads'
+  threads.value = await api<Thread[]>(q)
 }
 
 async function markAsLead(threadId: string) {
@@ -41,14 +50,22 @@ async function markAsLead(threadId: string) {
     })
     message.value = '已标记为线索，可在「线索」页跟进'
   } catch (err) {
-    error.value = err instanceof ApiError ? err.body : '标记线索失败'
+    error.value = formatApiError(err, '标记线索失败')
   } finally {
     markingId.value = null
   }
 }
 
 async function syncInbox() {
-  if (!accountId.value) return
+  if (!accountId.value) {
+    error.value = '请先选择具体账号再同步（「全部账号」仅用于查看）。'
+    return
+  }
+  const selected = accounts.value.find((a) => a.account_id === accountId.value)
+  if (selected && !runnable(selected)) {
+    error.value = '该账号设备不可用（离线或无障碍未开），请先到「设备」处理。'
+    return
+  }
   syncing.value = true
   error.value = ''
   message.value = ''
@@ -57,19 +74,55 @@ async function syncInbox() {
       method: 'POST',
       body: JSON.stringify({ account_id: accountId.value }),
     })
-    message.value = '已提交对账同步，正在等待手机执行…'
-    const final = await poll(task.task_id)
-    if (final?.status === 'succeeded') {
-      message.value = '私信已与手机对账更新'
-      await loadThreads()
-    } else {
-      const human = humanizeError(final?.error_code || errorCode.value)
-      error.value = `${human.title}。${human.nextStep}`
-    }
+    track(task.task_id, `同步私信 · ${accountName(accountId.value)}`)
+    message.value = '已提交同步私信任务，手机在后台执行。完成后可点「刷新列表」。'
   } catch (err) {
-    error.value = err instanceof ApiError ? err.body : '同步失败'
+    error.value = formatApiError(err, '同步失败')
   } finally {
     syncing.value = false
+  }
+}
+
+async function syncAllRunnable() {
+  const targets = accounts.value.filter((a) => runnable(a))
+  if (!targets.length) {
+    error.value = '没有可用账号可同步（需在线且无障碍已开）。'
+    return
+  }
+  syncing.value = true
+  error.value = ''
+  message.value = ''
+  const submitted: string[] = []
+  const fail: string[] = []
+  try {
+    for (const account of targets) {
+      try {
+        const task = await api<{ task_id: string }>('/api/v1/inbox/sync', {
+          method: 'POST',
+          body: JSON.stringify({ account_id: account.account_id }),
+        })
+        track(task.task_id, `同步私信 · ${accountName(account.account_id)}`)
+        submitted.push(account.account_id)
+      } catch (err) {
+        fail.push(`${accountName(account.account_id)}: ${formatApiError(err, '失败')}`)
+      }
+    }
+    if (submitted.length) {
+      message.value = `已提交 ${submitted.length} 个私信同步任务，手机在后台执行。完成后可点「刷新列表」。`
+    }
+    if (fail.length) error.value = fail.join('；')
+  } finally {
+    syncing.value = false
+  }
+}
+
+async function refreshThreads() {
+  error.value = ''
+  try {
+    await loadThreads()
+    message.value = '已刷新私信列表'
+  } catch {
+    error.value = '刷新私信列表失败'
   }
 }
 
@@ -83,11 +136,12 @@ async function onAccountChange() {
 
 onMounted(async () => {
   try {
-    accounts.value = await api<Account[]>('/api/v1/accounts?platform=xhs')
-    if (accounts.value[0]) {
-      accountId.value = accounts.value[0].account_id
-      await loadThreads()
+    await loadFleet()
+    const qAccount = route.query.account_id as string | undefined
+    if (qAccount && accounts.value.some((a) => a.account_id === qAccount)) {
+      accountId.value = qAccount
     }
+    await loadThreads()
   } catch {
     error.value = '加载账号失败'
   }
@@ -97,20 +151,39 @@ onMounted(async () => {
 <template>
   <section>
     <h1>私信</h1>
+    <SubmittedTasksBanner
+      :tasks="submittedTasks"
+      :status-text="statusText"
+      :is-running="isRunning"
+      @dismiss="dismiss"
+    />
     <div class="panel">
       <label>
         账号
         <select v-model="accountId" @change="onAccountChange">
-          <option v-for="a in accounts" :key="a.account_id" :value="a.account_id">
-            {{ a.display_name?.trim() || '未命名账号' }}
+          <option value="">全部账号</option>
+          <option
+            v-for="a in accounts"
+            :key="a.account_id"
+            :value="a.account_id"
+            :disabled="!runnable(a)"
+          >
+            {{ optionLabel(a) }}
           </option>
         </select>
       </label>
-      <button type="button" :disabled="!accountId || syncing" @click="syncInbox">
-        {{ syncing ? '对账同步中…' : '同步最新私信' }}
+      <div class="row">
+        <button type="button" :disabled="!accountId || syncing" @click="syncInbox">
+          {{ syncing ? '提交中…' : '同步最新私信' }}
+        </button>
+        <button type="button" class="ghost" @click="refreshThreads">刷新列表</button>
+      </div>
+      <button type="button" class="secondary-block" :disabled="syncing" @click="syncAllRunnable">
+        {{ syncing ? '提交中…' : '同步全部可用账号' }}
       </button>
-      <p class="hint">默认显示数据库缓存；同步会与手机对账，设备上已删除的会话会从缓存移除。</p>
-      <p v-if="status" class="muted">任务状态：{{ status }}</p>
+      <p class="hint">
+        同步立刻返回，不等待手机跑完。进度看上方任务条或「任务」页；完成后点「刷新列表」看最新会话。
+      </p>
       <p v-if="message" class="ok">{{ message }}</p>
       <p v-if="error" class="error">{{ error }}</p>
     </div>
@@ -118,7 +191,8 @@ onMounted(async () => {
     <table v-if="threads.length">
       <thead>
         <tr>
-          <th style="width: 18%">会话</th>
+          <th v-if="showAllAccounts" style="width: 14%">所属账号</th>
+          <th style="width: 16%">对方</th>
           <th>最近对话预览</th>
           <th style="width: 8%">未读</th>
           <th style="width: 18%"></th>
@@ -126,13 +200,14 @@ onMounted(async () => {
       </thead>
       <tbody>
         <tr v-for="t in threads" :key="t.thread_id">
+          <td v-if="showAllAccounts" class="account">{{ accountName(t.account_id) }}</td>
           <td class="title">{{ t.title_summary }}</td>
           <td class="preview">{{ t.preview_summary || '（暂无正文，可点同步最新私信拉取）' }}</td>
           <td>{{ t.unread ? '是' : '否' }}</td>
           <td class="row-actions">
             <router-link
               class="link"
-              :to="{ path: `/inbox/${t.thread_id}`, query: { account_id: accountId } }"
+              :to="{ path: `/inbox/${t.thread_id}`, query: { account_id: t.account_id } }"
             >
               查看并回复
             </router-link>
@@ -163,10 +238,16 @@ onMounted(async () => {
   gap: 14px;
   margin-bottom: 20px;
 }
+.row { display: flex; flex-wrap: wrap; gap: 10px; }
 label { display: flex; flex-direction: column; gap: 6px; font-weight: 600; }
 select, button { padding: 10px 12px; border-radius: 8px; font: inherit; }
 button { background: #2d6a4f; color: #fff; border: 0; font-weight: 600; cursor: pointer; align-self: flex-start; }
 button:disabled { opacity: 0.6; cursor: not-allowed; }
+button.ghost {
+  background: #fff;
+  color: #2d6a4f;
+  border: 1px solid #2d6a4f;
+}
 button.secondary {
   background: #fff;
   color: #2d6a4f;
@@ -175,10 +256,19 @@ button.secondary {
   font-size: 0.85rem;
   align-self: auto;
 }
+button.secondary-block {
+  background: #344054;
+  color: #fff;
+  border: 0;
+  font-weight: 600;
+  padding: 10px 12px;
+  align-self: flex-start;
+}
 .row-actions { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
 table { width: 100%; border-collapse: collapse; background: #fff; border-radius: 12px; overflow: hidden; }
 th, td { text-align: left; padding: 12px 14px; border-bottom: 1px solid #eee; vertical-align: top; }
 th { background: #f3f4f6; }
+.account { color: #344054; white-space: nowrap; }
 .title { font-weight: 600; white-space: nowrap; }
 .preview {
   color: #344054;
@@ -189,7 +279,6 @@ th { background: #f3f4f6; }
 }
 .link { color: #2d6a4f; font-weight: 600; text-decoration: none; }
 .hint { color: #5c6770; margin: 0; font-size: 0.88rem; font-weight: 400; }
-.muted { color: #5c6770; margin: 0; }
 .ok { color: #2d6a4f; margin: 0; }
 .error { color: #b42318; margin: 0; }
 .empty { color: #5c6770; background: #fff; border-radius: 12px; padding: 20px; }

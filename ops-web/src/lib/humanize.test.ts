@@ -13,4 +13,15 @@ describe('humanizeError', () => {
   it('handles empty', () => {
     expect(humanizeError(null).title).toContain('问题')
   })
+
+  it('maps device and screen readiness codes', () => {
+    expect(humanizeError('DEVICE_UNAVAILABLE').nextStep).toContain('设备')
+    expect(humanizeError('SCREEN_NOT_READY').title).toContain('亮屏')
+    expect(humanizeError('PLAYBOOK_FORBIDDEN').title).toContain('角色')
+    expect(humanizeError('DEVICE_NOT_FOUND').title).toContain('手机')
+    expect(humanizeError('DEVICE_ALREADY_BOUND').title).toContain('绑')
+    expect(humanizeError('SET_TEXT_FAILED').title).toContain('输入框')
+    expect(humanizeError('EDITOR_NOT_READY').title).toContain('编辑页')
+  })
 })
+

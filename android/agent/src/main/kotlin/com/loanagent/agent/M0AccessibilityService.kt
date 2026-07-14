@@ -206,6 +206,20 @@ class M0AccessibilityService :
         return rootInActiveWindow
     }
 
+    /** True when any accessibility window belongs to [packageName] (allowed targets only). */
+    fun hasAllowedPackageWindow(packageName: String): Boolean {
+        if (!isPackageAllowed(packageName)) return false
+        for (window in windows.orEmpty()) {
+            val root = window.root ?: continue
+            try {
+                if (root.packageName?.toString() == packageName) return true
+            } finally {
+                recycle(root)
+            }
+        }
+        return rootInActiveWindow?.packageName?.toString() == packageName
+    }
+
     override fun observe(expectedLease: TargetLease?): UiSnapshot? {
         val probe = atomicProbe()
         if (expectedLease != null && !expectedLease.matches(probe.lease)) return null
@@ -658,20 +672,21 @@ class M0AccessibilityService :
                     matchStatus = SelectorMatchStatus.INDETERMINATE,
                 )
             }
-            if (exactMatches.size > 1) {
-                exactMatches.forEach(::recycle)
-                return NodeActionAttempt(
-                    accepted = false,
-                    matchStatus = SelectorMatchStatus.AMBIGUOUS,
-                )
-            }
             if (exactMatches.isEmpty()) {
                 return NodeActionAttempt(
                     accepted = false,
                     matchStatus = SelectorMatchStatus.NOT_FOUND,
                 )
             }
-            val node = exactMatches.single()
+            val node = resolvePreferredMatch(exactMatches)
+            if (node == null) {
+                exactMatches.forEach(::recycle)
+                return NodeActionAttempt(
+                    accepted = false,
+                    matchStatus = SelectorMatchStatus.AMBIGUOUS,
+                )
+            }
+            exactMatches.filter { it !== node }.forEach(::recycle)
             try {
                 if (!expectedLease.matches(leaseProbe())) {
                     return NodeActionAttempt(false, leaseLost = true)
@@ -700,6 +715,19 @@ class M0AccessibilityService :
         } finally {
             recycle(root)
         }
+    }
+
+    /**
+     * When several nodes share a selector (e.g. title+body EditTexts, or hint label + field),
+     * prefer the focused node, then a single editable. Still ambiguous if neither uniquely wins.
+     */
+    private fun resolvePreferredMatch(
+        matches: List<AccessibilityNodeInfo>,
+    ): AccessibilityNodeInfo? {
+        if (matches.size == 1) return matches.single()
+        matches.singleOrNull { it.isFocused }?.let { return it }
+        matches.singleOrNull { it.isEditable }?.let { return it }
+        return null
     }
 
     private fun queryStableNodes(

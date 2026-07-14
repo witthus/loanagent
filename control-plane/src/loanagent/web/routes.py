@@ -17,6 +17,7 @@ def login_page() -> Response:
 
 @router.post("/login")
 async def login_submit(request: Request) -> Response:
+    """Legacy form login kept for smoke scripts; SPA uses POST /ops/api/login."""
     token = _form_value(await request.body(), "token")
     if not _valid_ops_token(token):
         return JSONResponse({"ok": False, "error": "Invalid ops token"}, status_code=401)
@@ -78,7 +79,7 @@ def dashboard(request: Request) -> Response:
     include_in_schema=False,
 )
 def legacy_ops_pages(path: str, request: Request) -> Response:
-    """Send legacy Jinja URLs into the Vue SPA."""
+    """Redirect legacy /ops/* bookmarks into the Vue SPA."""
     redirect = _redirect_if_unauthenticated(request)
     if redirect is not None:
         return redirect
@@ -87,17 +88,20 @@ def legacy_ops_pages(path: str, request: Request) -> Response:
         "accounts": "/accounts",
         "tasks": "/tasks",
         "content": "/contents",
+        "contents": "/contents",
         "publish": "/publish",
         "comments": "/comments",
         "inbox": "/inbox",
+        "schedules": "/schedules",
+        "leads": "/leads",
+        "engagement": "/engagement",
+        "alerts": "/alerts",
+        "help": "/help",
     }
     if path.startswith("inbox/"):
         return RedirectResponse(f"/{path}", status_code=303)
-    target = mapping.get(path.split("/", 1)[0], "/")
-    if path.startswith("comments") or path.startswith("inbox"):
-        # form posts under comments/* or inbox/*
-        root = path.split("/", 1)[0]
-        target = mapping.get(root, "/")
+    root = path.split("/", 1)[0]
+    target = mapping.get(root, "/")
     return RedirectResponse(target, status_code=303)
 
 

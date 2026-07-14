@@ -14,15 +14,6 @@ export function accountDisplayName(
   return name || fallback
 }
 
-export function accountNameFromMap(
-  accountId: string | null | undefined,
-  byId: Record<string, string>,
-  fallback = '未命名账号',
-): string {
-  if (!accountId) return fallback
-  return byId[accountId] || fallback
-}
-
 export function buildAccountNameMap(accounts: AccountLike[]): Record<string, string> {
   const map: Record<string, string> = {}
   for (const account of accounts) {

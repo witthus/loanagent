@@ -11,6 +11,7 @@ const auth = useAuthStore()
 const daily = [
   { to: '/', label: zhCN.nav.today },
   { to: '/publish', label: zhCN.nav.publish },
+  { to: '/schedules', label: zhCN.nav.schedules },
   { to: '/comments', label: zhCN.nav.comments },
   { to: '/inbox', label: zhCN.nav.inbox },
   { to: '/leads', label: zhCN.nav.leads },
@@ -19,6 +20,7 @@ const daily = [
 ]
 
 const system = [
+  { to: '/devices', label: zhCN.nav.devices },
   { to: '/accounts', label: zhCN.nav.accounts },
   { to: '/tasks', label: zhCN.nav.tasks },
   { to: '/alerts', label: zhCN.nav.alerts },

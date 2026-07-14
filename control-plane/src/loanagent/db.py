@@ -3,7 +3,7 @@ from __future__ import annotations
 import psycopg
 
 
-FLEET_SCHEMA_VERSION = 17
+FLEET_SCHEMA_VERSION = 20
 
 
 def migrate_fleet_schema(database_url: str) -> None:
@@ -360,6 +360,16 @@ def migrate_fleet_schema(database_url: str) -> None:
                 """
             )
             _record_migration(connection, 19)
+
+        if 20 not in applied:
+            connection.execute(
+                """
+                ALTER TABLE devices
+                ADD COLUMN IF NOT EXISTS public_ip TEXT,
+                ADD COLUMN IF NOT EXISTS geo_label TEXT
+                """
+            )
+            _record_migration(connection, 20)
 
 
 def _record_migration(connection: psycopg.Connection, version: int) -> None:

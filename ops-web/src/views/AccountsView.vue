@@ -1,18 +1,19 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { api } from '@/lib/api'
-import { accountDisplayName, roleLabel } from '@/lib/labels'
-import { humanizeError } from '@/lib/humanize'
+import { formatApiError } from '@/lib/apiError'
+import {
+  accountHealth,
+  accountStatusLabel,
+  healthLabel,
+  type FleetDevice,
+} from '@/lib/fleet'
+import { deviceDisplayName, networkLabel } from '@/lib/deviceFleet'
+import { accountDisplayName, formatDateTime, roleLabel } from '@/lib/labels'
 import { platformLabel, type Platform } from '@/platform'
 
-type Device = {
+type Device = FleetDevice & {
   device_id: string
-  display_name?: string | null
-  online?: boolean
-  a11y_bound?: boolean | null
-  wifi_connected?: boolean | null
-  last_seen_at?: string | null
-  agent_version?: string | null
 }
 
 type Account = {
@@ -22,82 +23,75 @@ type Account = {
   device_id?: string | null
   display_name?: string | null
   platform: Platform
+  daily_publish_quota?: number
 }
 
 type Row = {
-  account: Account | null
+  account: Account
   device: Device | null
 }
 
 const rows = ref<Row[]>([])
 const allDevices = ref<Device[]>([])
 const allAccounts = ref<Account[]>([])
+const devicesById = ref<Record<string, Device>>({})
 const error = ref('')
 const saving = ref<string | null>(null)
 const message = ref('')
-const bindAccountId = ref('')
-const bindDeviceId = ref('')
+let refreshTimer: number | null = null
+let loadGeneration = 0
 
-const unboundAccounts = computed(() =>
-  allAccounts.value.filter((a) => !a.device_id),
-)
-const unboundDevices = computed(() => {
+const unboundDeviceCount = computed(() => {
   const used = new Set(
     allAccounts.value.map((a) => a.device_id).filter(Boolean) as string[],
   )
-  return allDevices.value.filter((d) => !used.has(d.device_id))
+  return allDevices.value.filter((d) => !used.has(d.device_id)).length
 })
 
-function deviceStatus(device: Device | null): string {
-  if (!device) return '未绑定设备'
-  if (!device.online) return '手机好像不在线'
-  if (device.a11y_bound === false) return humanizeError('A11Y_DOWN').title
-  return '就绪'
-}
+const summary = computed(() => {
+  let ready = 0
+  let offline = 0
+  let paused = 0
+  for (const account of allAccounts.value) {
+    const health = accountHealth(account, devicesById.value)
+    if (health === 'ready') ready += 1
+    else if (health === 'paused') paused += 1
+    else if (health === 'offline' || health === 'a11y_down' || health === 'unbound') offline += 1
+  }
+  return {
+    total: allAccounts.value.length,
+    ready,
+    offline,
+    paused,
+    pending: unboundDeviceCount.value,
+  }
+})
 
-function accountLabel(account: Account | null): string {
-  if (!account) return '未绑定账号'
-  return accountDisplayName(account)
-}
-
-function deviceLabel(device: Device | null): string {
-  if (!device) return '—'
-  return device.display_name?.trim() || '未命名设备'
+function rowHealth(account: Account): string {
+  return healthLabel(accountHealth(account, devicesById.value))
 }
 
 async function load() {
+  const generation = ++loadGeneration
   error.value = ''
   try {
     const [devices, accounts] = await Promise.all([
       api<Device[]>('/api/v1/devices'),
       api<Account[]>('/api/v1/accounts?platform=xhs'),
     ])
+    if (generation !== loadGeneration) return
     allDevices.value = devices
     allAccounts.value = accounts
-    const byDevice = new Map<string, Account>()
-    for (const account of accounts) {
-      if (account.device_id) byDevice.set(account.device_id, account)
-    }
-    const usedAccounts = new Set<string>()
-    const merged: Row[] = devices.map((device) => {
-      const account = byDevice.get(device.device_id) ?? null
-      if (account) usedAccounts.add(account.account_id)
-      return { account, device }
-    })
-    for (const account of accounts) {
-      if (!usedAccounts.has(account.account_id)) {
-        merged.push({ account, device: null })
-      }
-    }
-    rows.value = merged
-    if (!bindAccountId.value && unboundAccounts.value[0]) {
-      bindAccountId.value = unboundAccounts.value[0].account_id
-    }
-    if (!bindDeviceId.value && unboundDevices.value[0]) {
-      bindDeviceId.value = unboundDevices.value[0].device_id
-    }
+    const map: Record<string, Device> = {}
+    for (const device of devices) map[device.device_id] = device
+    devicesById.value = map
+    rows.value = accounts.map((account) => ({
+      account,
+      device: account.device_id ? map[account.device_id] || null : null,
+    }))
   } catch {
-    error.value = '加载账号与设备失败'
+    if (generation !== loadGeneration) return
+    error.value = '加载账号失败'
   }
 }
 
@@ -115,53 +109,8 @@ async function renameAccount(account: Account) {
     })
     message.value = '账号名称已更新'
     await load()
-  } catch {
-    error.value = '更新账号名称失败'
-  } finally {
-    saving.value = null
-  }
-}
-
-async function renameDevice(device: Device) {
-  const next = window.prompt('设备显示名称', device.display_name || '')
-  if (next == null) return
-  const trimmed = next.trim()
-  if (!trimmed || trimmed === (device.display_name || '')) return
-  saving.value = `device:${device.device_id}`
-  message.value = ''
-  try {
-    await api(`/api/v1/devices/${encodeURIComponent(device.device_id)}`, {
-      method: 'PATCH',
-      body: JSON.stringify({ display_name: trimmed }),
-    })
-    message.value = '设备名称已更新'
-    await load()
-  } catch {
-    error.value = '更新设备名称失败'
-  } finally {
-    saving.value = null
-  }
-}
-
-async function bindAccountDevice() {
-  if (!bindAccountId.value || !bindDeviceId.value) {
-    error.value = '请选择账号和设备'
-    return
-  }
-  saving.value = 'bind'
-  message.value = ''
-  error.value = ''
-  try {
-    await api(`/api/v1/accounts/${encodeURIComponent(bindAccountId.value)}`, {
-      method: 'PATCH',
-      body: JSON.stringify({ device_id: bindDeviceId.value }),
-    })
-    message.value = '账号与设备已绑定'
-    bindAccountId.value = ''
-    bindDeviceId.value = ''
-    await load()
-  } catch {
-    error.value = '绑定失败（设备可能已被其他账号占用）'
+  } catch (err) {
+    error.value = formatApiError(err, '更新账号名称失败')
   } finally {
     saving.value = null
   }
@@ -179,82 +128,119 @@ async function unbindAccount(account: Account) {
     })
     message.value = '已解除绑定'
     await load()
-  } catch {
-    error.value = '解除绑定失败'
+  } catch (err) {
+    error.value = formatApiError(err, '解除绑定失败')
   } finally {
     saving.value = null
   }
 }
 
-onMounted(load)
+async function pauseAccount(account: Account) {
+  if (!window.confirm(`暂停「${accountDisplayName(account)}」？暂停后不会再下发任务。`)) return
+  saving.value = `pause:${account.account_id}`
+  message.value = ''
+  error.value = ''
+  try {
+    await api(`/api/v1/accounts/${encodeURIComponent(account.account_id)}/pause`, {
+      method: 'POST',
+    })
+    message.value = '账号已暂停'
+    await load()
+  } catch (err) {
+    error.value = formatApiError(err, '暂停失败')
+  } finally {
+    saving.value = null
+  }
+}
+
+async function resumeAccount(account: Account) {
+  saving.value = `resume:${account.account_id}`
+  message.value = ''
+  error.value = ''
+  try {
+    await api(`/api/v1/accounts/${encodeURIComponent(account.account_id)}/resume`, {
+      method: 'POST',
+    })
+    message.value = '账号已恢复'
+    await load()
+  } catch (err) {
+    error.value = formatApiError(err, '恢复失败')
+  } finally {
+    saving.value = null
+  }
+}
+
+onMounted(() => {
+  load()
+  refreshTimer = window.setInterval(() => {
+    load()
+  }, 15_000)
+})
+
+onUnmounted(() => {
+  if (refreshTimer != null) window.clearInterval(refreshTimer)
+})
 </script>
 
 <template>
   <section>
-    <h1>账号与设备</h1>
-    <p class="hint">一台手机绑定一个账号。可在这里改显示名称，或绑定/解绑设备。</p>
+    <h1>账号</h1>
+    <p class="hint">
+      管理账号角色、暂停与解绑。装包、待绑定设备、改设备名请到
+      <router-link to="/devices">设备</router-link>
+      页。页面每 15 秒自动刷新。
+    </p>
+    <div class="summary">
+      <span>账号 {{ summary.total }}</span>
+      <span class="ok">可用 {{ summary.ready }}</span>
+      <span class="warn">异常 {{ summary.offline }}</span>
+      <span>暂停 {{ summary.paused }}</span>
+      <router-link
+        v-if="summary.pending"
+        class="warn link"
+        to="/devices"
+      >
+        待绑定设备 {{ summary.pending }} →
+      </router-link>
+    </div>
     <p v-if="message" class="ok">{{ message }}</p>
     <p v-if="error" class="error">{{ error }}</p>
-
-    <div v-if="unboundAccounts.length && unboundDevices.length" class="bind-panel">
-      <h2>绑定账号与设备</h2>
-      <div class="bind-row">
-        <label>
-          未绑定账号
-          <select v-model="bindAccountId">
-            <option v-for="a in unboundAccounts" :key="a.account_id" :value="a.account_id">
-              {{ accountDisplayName(a) }}
-            </option>
-          </select>
-        </label>
-        <label>
-          未绑定设备
-          <select v-model="bindDeviceId">
-            <option v-for="d in unboundDevices" :key="d.device_id" :value="d.device_id">
-              {{ d.display_name?.trim() || d.device_id }}
-              {{ d.online ? '（在线）' : '（离线）' }}
-            </option>
-          </select>
-        </label>
-        <button type="button" :disabled="saving === 'bind'" @click="bindAccountDevice">
-          {{ saving === 'bind' ? '绑定中…' : '绑定' }}
-        </button>
-      </div>
-    </div>
 
     <table>
       <thead>
         <tr>
           <th>账号</th>
           <th>角色</th>
-          <th>平台</th>
+          <th>账号状态</th>
           <th>设备</th>
-          <th>状态</th>
-          <th>无障碍</th>
+          <th>运行状态</th>
+          <th>网络</th>
+          <th>最近心跳</th>
+          <th>Agent</th>
           <th>操作</th>
         </tr>
       </thead>
       <tbody>
-        <tr v-for="(row, index) in rows" :key="row.account?.account_id || row.device?.device_id || index">
-          <td>{{ accountLabel(row.account) }}</td>
-          <td>{{ row.account ? roleLabel(row.account.role) : '—' }}</td>
-          <td>{{ row.account ? platformLabel(row.account.platform || 'xhs') : '—' }}</td>
+        <tr v-for="row in rows" :key="row.account.account_id">
           <td>
-            <div>{{ deviceLabel(row.device) }}</div>
+            <div>{{ accountDisplayName(row.account) }}</div>
+            <div class="muted">{{ platformLabel(row.account.platform || 'xhs') }}</div>
           </td>
-          <td>{{ deviceStatus(row.device) }}</td>
+          <td>{{ roleLabel(row.account.role) }}</td>
+          <td>{{ accountStatusLabel(row.account.status) }}</td>
           <td>
-            {{
-              row.device?.a11y_bound === true
-                ? '已就绪'
-                : row.device?.a11y_bound === false
-                  ? '未就绪'
-                  : '—'
-            }}
+            <template v-if="row.device">
+              <div>{{ deviceDisplayName(row.device) }}</div>
+              <div class="muted">{{ row.device.geo_label || row.device.device_id }}</div>
+            </template>
+            <router-link v-else class="warn link" to="/devices">去绑定设备</router-link>
           </td>
+          <td>{{ rowHealth(row.account) }}</td>
+          <td>{{ networkLabel(row.device) }}</td>
+          <td>{{ formatDateTime(row.device?.last_seen_at) }}</td>
+          <td>{{ row.device?.agent_version || '—' }}</td>
           <td class="actions">
             <button
-              v-if="row.account"
               type="button"
               :disabled="saving === `account:${row.account.account_id}`"
               @click="renameAccount(row.account)"
@@ -262,15 +248,24 @@ onMounted(load)
               改账号名
             </button>
             <button
-              v-if="row.device"
+              v-if="row.account.status === 'active'"
               type="button"
-              :disabled="saving === `device:${row.device.device_id}`"
-              @click="renameDevice(row.device)"
+              :disabled="saving === `pause:${row.account.account_id}`"
+              @click="pauseAccount(row.account)"
             >
-              改设备名
+              暂停
             </button>
             <button
-              v-if="row.account?.device_id"
+              v-if="row.account.status === 'paused'"
+              type="button"
+              class="primary"
+              :disabled="saving === `resume:${row.account.account_id}`"
+              @click="resumeAccount(row.account)"
+            >
+              恢复
+            </button>
+            <button
+              v-if="row.account.device_id"
               type="button"
               :disabled="saving === `unbind:${row.account.account_id}`"
               @click="unbindAccount(row.account)"
@@ -278,6 +273,9 @@ onMounted(load)
               解绑
             </button>
           </td>
+        </tr>
+        <tr v-if="!rows.length">
+          <td colspan="9" class="muted">暂无账号。请先在「设备」页创建并绑定。</td>
         </tr>
       </tbody>
     </table>
@@ -290,19 +288,19 @@ th, td { text-align: left; padding: 12px 14px; border-bottom: 1px solid #eee; ve
 th { background: #f3f4f6; }
 .error { color: #b42318; }
 .ok { color: #067647; }
+.warn { color: #b54708; }
+.muted { color: #5c6770; font-size: 0.85rem; margin-top: 4px; }
 .hint { color: #5c6770; margin: 0 0 12px; }
-.bind-panel {
-  background: #fff;
-  border-radius: 12px;
-  padding: 16px 18px;
-  margin-bottom: 16px;
-  max-width: 720px;
+.summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  margin-bottom: 14px;
+  font-weight: 600;
+  align-items: center;
 }
-.bind-panel h2 { margin: 0 0 12px; font-size: 1rem; }
-.bind-row { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end; }
-.bind-row label { display: flex; flex-direction: column; gap: 6px; font-weight: 600; min-width: 180px; }
-.bind-row select, .bind-row button { padding: 8px 12px; border-radius: 8px; font: inherit; }
-.bind-row button { background: #2d6a4f; color: #fff; border: 0; font-weight: 600; cursor: pointer; }
+.link { text-decoration: none; }
+.link:hover { text-decoration: underline; }
 .actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .actions button {
   border: 1px solid #d0d5dd;
@@ -310,6 +308,11 @@ th { background: #f3f4f6; }
   border-radius: 8px;
   padding: 6px 10px;
   cursor: pointer;
+}
+.actions button.primary {
+  background: #2d6a4f;
+  color: #fff;
+  border-color: #2d6a4f;
 }
 .actions button:disabled { opacity: 0.6; cursor: default; }
 </style>

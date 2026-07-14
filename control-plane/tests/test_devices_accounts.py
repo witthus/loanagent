@@ -180,6 +180,62 @@ def test_device_heartbeat_api_upserts_online_device_and_lists_it() -> None:
     assert any(device["device_id"] == device_id for device in devices.json())
 
 
+def test_device_heartbeat_captures_peer_ip_without_blocking_on_geo(monkeypatch) -> None:
+    from loanagent import geo_ip
+    from loanagent import main as main_mod
+
+    device_id = unique_id("device-geo")
+    clear_calls: list[str] = []
+
+    def boom_lookup(ip: str | None, force_refresh: bool = False) -> str | None:
+        clear_calls.append(ip or "")
+        return "湖北黄冈"
+
+    monkeypatch.setattr(main_mod, "extract_client_ip", lambda _request: "1.2.3.4")
+    monkeypatch.setattr(geo_ip, "cached_geo_label", lambda _ip: None)
+    monkeypatch.setattr(geo_ip, "needs_geo_refresh", lambda _ip: True)
+    monkeypatch.setattr(geo_ip, "lookup_geo_label", boom_lookup)
+    # Allow begin_geo_refresh to claim the slot
+    monkeypatch.setattr(geo_ip, "begin_geo_refresh", lambda _ip: True)
+    monkeypatch.setattr(geo_ip, "end_geo_refresh", lambda _ip: None)
+
+    with TestClient(app) as client:
+        heartbeat = client.post(
+            f"/api/v1/devices/{device_id}/heartbeat",
+            headers={**device_headers(), "X-Forwarded-For": "9.9.9.9"},
+            json={"agent_version": "0.1.2-debug", "a11y_bound": True},
+        )
+
+    assert heartbeat.status_code == 200
+    row = heartbeat.json()
+    assert row["public_ip"] == "1.2.3.4"
+    # Sync path must not wait on network; geo may arrive via background task.
+    assert row["geo_label"] is None or row["geo_label"] == "湖北黄冈"
+
+
+def test_device_repository_heartbeat_clears_stale_geo_when_ip_changes() -> None:
+    from loanagent.devices import DeviceRepository
+
+    device_id = unique_id("device-ip-change")
+    repository = DeviceRepository(DATABASE_URL)
+    repository.migrate()
+    first = repository.heartbeat(
+        device_id=device_id,
+        agent_version="0.1.2",
+        public_ip="1.1.1.1",
+        geo_label="广东深圳",
+    )
+    second = repository.heartbeat(
+        device_id=device_id,
+        agent_version="0.1.2",
+        public_ip="2.2.2.2",
+        geo_label=None,
+    )
+    assert first.geo_label == "广东深圳"
+    assert second.public_ip == "2.2.2.2"
+    assert second.geo_label is None
+
+
 def test_account_api_creates_lists_and_blocks_duplicate_device_binding() -> None:
     device_id = unique_id("device-api")
     main_account_id = unique_id("account-main-api")

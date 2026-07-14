@@ -16,12 +16,16 @@ class HeartbeatClient(
         a11yBound: Boolean,
         wifiConnected: Boolean? = null,
         cellularOk: Boolean? = null,
+        manufacturer: String? = null,
+        model: String? = null,
     ): Boolean {
         val body = JSONObject()
             .put("agent_version", CloudBridgeConfig.agentVersion())
             .put("a11y_bound", a11yBound)
         if (wifiConnected != null) body.put("wifi_connected", wifiConnected)
         if (cellularOk != null) body.put("cellular_ok", cellularOk)
+        if (!manufacturer.isNullOrBlank()) body.put("manufacturer", manufacturer)
+        if (!model.isNullOrBlank()) body.put("model", model)
         return postJson(
             url = CloudBridgeConfig.heartbeatUrl(),
             body = body.toString(),

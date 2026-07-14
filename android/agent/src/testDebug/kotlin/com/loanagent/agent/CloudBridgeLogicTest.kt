@@ -13,7 +13,7 @@ class TaskCommandDispatcherTest {
     @Test
     fun dedupesSameTaskIdAndReportsOnce() {
         var accessChecks = 0
-        val runtime = object : PlaybookEngineTest.FakePlaybookRuntime(hint = PageHint.HOME) {
+        val runtime = object : PlaybookEngineTest.FakePlaybookRuntime(startHint = PageHint.HOME) {
             override fun accessibilityAlive(): Boolean {
                 accessChecks += 1
                 return true
@@ -65,7 +65,7 @@ class TaskCommandDispatcherTest {
     fun passesParamsToPublishNote() {
         val engine = PlaybookEngine(
             runtime = PlaybookEngineTest.FakePlaybookRuntime(
-                hint = PageHint.EDITOR,
+                startHint = PageHint.EDITOR,
                 clickOk = true,
                 setTextOk = true,
             ),
@@ -85,7 +85,7 @@ class TaskCommandDispatcherTest {
     @Test
     fun replyCommentReportsWrongPage() {
         val engine = PlaybookEngine(
-            runtime = PlaybookEngineTest.FakePlaybookRuntime(hint = PageHint.HOME),
+            runtime = PlaybookEngineTest.FakePlaybookRuntime(startHint = PageHint.HOME),
             registry = DefaultPlaybookRegistry.create(),
             ledger = MemoryEffectLedger(),
         )
@@ -105,7 +105,7 @@ class TaskCommandDispatcherTest {
     @Test
     fun postCommentReportsWrongPage() {
         val engine = PlaybookEngine(
-            runtime = PlaybookEngineTest.FakePlaybookRuntime(hint = PageHint.HOME),
+            runtime = PlaybookEngineTest.FakePlaybookRuntime(startHint = PageHint.HOME),
             registry = DefaultPlaybookRegistry.create(),
             ledger = MemoryEffectLedger(),
         )

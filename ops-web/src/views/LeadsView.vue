@@ -1,6 +1,9 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
-import { api, ApiError } from '@/lib/api'
+import { api } from '@/lib/api'
+import { formatApiError } from '@/lib/apiError'
+import { useFleetAccounts } from '@/composables/useFleetAccounts'
+import { formatDateTime } from '@/lib/labels'
 
 type Lead = {
   lead_id: string
@@ -8,6 +11,8 @@ type Lead = {
   status: string
   note: string | null
   updated_at: string
+  account_id?: string | null
+  title_summary?: string | null
 }
 
 const STATUS_LABEL: Record<string, string> = {
@@ -17,10 +22,23 @@ const STATUS_LABEL: Record<string, string> = {
   closed: '已关闭',
 }
 
+const { accountNames, loadFleet } = useFleetAccounts()
 const rows = ref<Lead[]>([])
 const draftNotes = ref<Record<string, string>>({})
 const error = ref('')
 const savingId = ref<string | null>(null)
+
+function accountName(id: string | null | undefined): string {
+  if (!id) return '—'
+  return accountNames.value[id] || '未命名账号'
+}
+
+function threadLink(row: Lead) {
+  return {
+    path: `/inbox/${row.thread_id}`,
+    query: row.account_id ? { account_id: row.account_id } : {},
+  }
+}
 
 async function load() {
   rows.value = await api<Lead[]>('/api/v1/inbox/leads')
@@ -40,16 +58,19 @@ async function markLead(threadId: string, status: string) {
     })
     await load()
   } catch (err) {
-    error.value = err instanceof ApiError ? err.body : '更新线索失败'
+    error.value = formatApiError(err, '更新线索失败')
   } finally {
     savingId.value = null
   }
 }
 
-onMounted(() => {
-  load().catch(() => {
+onMounted(async () => {
+  try {
+    await loadFleet()
+    await load()
+  } catch {
     error.value = '加载线索失败'
-  })
+  }
 })
 </script>
 
@@ -60,7 +81,8 @@ onMounted(() => {
     <table v-if="rows.length">
       <thead>
         <tr>
-          <th>会话</th>
+          <th>对方</th>
+          <th>所属账号</th>
           <th>状态</th>
           <th>备注</th>
           <th>更新时间</th>
@@ -70,15 +92,16 @@ onMounted(() => {
       <tbody>
         <tr v-for="row in rows" :key="row.lead_id">
           <td>
-            <router-link class="link" :to="`/inbox/${row.thread_id}`">
-              {{ row.thread_id }}
+            <router-link class="link" :to="threadLink(row)">
+              {{ row.title_summary || row.thread_id }}
             </router-link>
           </td>
+          <td>{{ accountName(row.account_id) }}</td>
           <td>{{ STATUS_LABEL[row.status] || row.status }}</td>
           <td>
             <input v-model="draftNotes[row.thread_id]" :placeholder="row.note || '添加备注…'" />
           </td>
-          <td>{{ row.updated_at }}</td>
+          <td>{{ formatDateTime(row.updated_at) }}</td>
           <td class="actions">
             <button
               v-for="s in ['new', 'warm', 'hot', 'closed']"

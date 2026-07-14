@@ -1,21 +1,22 @@
 # Loanagent
 
-小规模（首期 5–20 台）Android 端上 Agent 与云端编排系统的基础仓库。当前包含可复现工程、
-协议、本地基础设施、用于 M0 真机验证的 Device Owner / DPC APK，以及由用户手动启用的
-M0 无障碍诊断 Agent；仍不包含云 Task Runner、自动发帖 Playbook 或完整任务 API。
+小规模（首期 5–20 台）Android 端上 Agent 与云端编排系统。当前包含可复现工程、协议、本地
+基础设施、Device Owner / DPC、无障碍 Agent（debug 云桥）、FastAPI control-plane，以及
+矩阵助手 Vue 运营台（账号/设备/任务/私信/评论/排期等）。
 
 ## 仓库结构
 
 - `android/device-controller`：M0 Device Owner / DPC application APK。
-- `android/agent`：M0 无障碍 observer、单次动作执行、手动 IME fallback、bundled 中文 OCR、
-  签名权限恢复入口及 MQTT topic 示例。
+- `android/agent`：无障碍 Agent；debug 构建含云桥心跳与任务执行。
 - `android/fixture-app`：可控按钮、输入、滚动、弹窗、状态文案和自绘 OCR 区域。
-- `control-plane`：FastAPI、uv、src layout 与 pytest 的最小服务。
+- `control-plane`：FastAPI 控制面（任务、账号、设备、媒体、运营 API）与 pytest。
 - `ops-web`：矩阵助手运营前端（Vue 3 SPA）；开发态 `profile: web`，生产由 control-plane 静态托管。
 - `schemas`：Task、Event、selector bundle、update manifest 与 MQTT 契约。
 - `docker`：固定 Python/uv、JDK/Gradle/Android SDK 的构建镜像。
-- `infra/compose.yaml`：仅用于本地开发的 control-plane、Postgres、EMQX、MinIO 与按需
+- `infra/compose.yaml`：仅用于本地开发的 control-plane、Postgres、EMQX 与按需
   Android builder / ops-web；不是生产部署清单。
+- `infra/compose.server.yaml`：国内服务器部署（镜像源友好）。
+- `agent-releases/`：已发布 Agent APK 与安装指引 PDF（目录内产物默认 gitignore）。
 
 ## Docker-only 开发
 
@@ -123,6 +124,7 @@ MQTT 使用 QoS 1 和至少一次投递：
 
 ## 小规模持久化方向
 
-首期不引入 Redis。任务、设备状态和审计记录以 Postgres 为事实来源；后续异步投递采用与任务
-状态同事务写入的 Postgres outbox，再由独立 worker 投递到 EMQX。MinIO 仅承载素材与受控诊断
-对象。该边界避免在 20 台规模过早增加分布式缓存/队列的一致性与运维成本。
+首期不引入 Redis。任务、设备状态和审计记录以 Postgres 为事实来源；素材与媒体文件落在本地
+`MEDIA_ROOT`（经 HMAC 签名 URL 下载）。后续异步投递可采用与任务状态同事务写入的 Postgres
+outbox，再由独立 worker 投递到 EMQX。该边界避免在 20 台规模过早增加分布式缓存/对象存储的
+一致性与运维成本。

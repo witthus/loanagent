@@ -122,6 +122,11 @@ class ContentExtractors(
     }
 
     fun extractInboxThreads(nodes: List<UiNode>, maxItems: Int): List<ExtractedInboxThread> {
+        // Open-chat composer chrome must never be scraped as the message list.
+        // Prefer this over hub-tile bleed: "发消息…" / "按住说话" only appear in threads.
+        if (looksLikeOpenDmComposer(nodes)) {
+            return emptyList()
+        }
         val entries = inboxListEntries(nodes)
         val results = mutableListOf<ExtractedInboxThread>()
         var index = 0
@@ -199,9 +204,10 @@ class ContentExtractors(
             searchable.contains("陌生人消息") ||
             searchable.contains("系统通知")
         // Profile bleed via ViewPager is common; hub tiles still mean message tab.
+        // Never treat open-chat composer ("发消息" / "当前在线") as the list hub.
+        if (looksLikeOpenDmComposer(nodes)) return false
         if (!hubTiles && PROFILE_SURFACE_MARKERS.any(searchable::contains)) return false
         if (hubTiles) return searchable.contains("消息")
-        if (searchable.contains("发消息") && searchable.contains("当前在线")) return true
         if (!searchable.contains("消息")) return false
         val likeCollect = searchable.contains("赞和收藏") || searchable.contains("赞|收藏")
         return likeCollect &&
@@ -209,14 +215,25 @@ class ContentExtractors(
             !searchable.contains("小红书号")
     }
 
+    /** Composer-only markers: prove we are inside an open DM, not the inbox list. */
+    fun looksLikeOpenDmComposer(nodes: List<UiNode>): Boolean {
+        val searchable = nodes.joinToString("\n") {
+            listOfNotNull(it.text, it.contentDescription).joinToString(" ")
+        }
+        return searchable.contains("发消息") ||
+            searchable.contains("按住说话") ||
+            (searchable.contains("逛逛店铺") && searchable.contains("当前在线"))
+    }
+
     fun looksLikeOpenDmThreadSurface(nodes: List<UiNode>): Boolean {
+        if (looksLikeOpenDmComposer(nodes)) return true
         val searchable = nodes.joinToString("\n") {
             listOfNotNull(it.text, it.contentDescription).joinToString(" ")
         }
         if (PROFILE_SURFACE_MARKERS.any(searchable::contains)) return false
-        return searchable.contains("发消息") ||
-            searchable.contains("当前在线") ||
-            searchable.contains("按住说话")
+        // "当前在线" alone can appear in list previews — require shop/thread chrome with it.
+        return searchable.contains("当前在线") &&
+            (searchable.contains("逛逛店铺") || searchable.contains("咨询商品"))
     }
 
     /** Comment sheet chrome — not profile / note-only detail. */
@@ -377,6 +394,11 @@ class ContentExtractors(
         if (GENDER_ONLY.matches(value)) return false
         if (ACCESSIBILITY_EMOJI_ONLY.matches(value)) return false
         if (value.startsWith("来自笔记")) return false
+        // Composer / shop CTAs and sentence-like bodies must not become conversation titles.
+        if (value.startsWith("发消息")) return false
+        if (MESSAGE_OPENER_PREFIX.any(value::startsWith)) return false
+        if (hasSentencePunctuation(value)) return false
+        if (DM_CHROME_EXACT.contains(value) || DM_CHROME_CONTAINS.any(value::contains)) return false
         return true
     }
 
@@ -609,6 +631,16 @@ class ContentExtractors(
             "为你推荐",
             "发现好友",
             "通讯录好友",
+            // Open-chat / shop chrome that must never become list rows.
+            "逛逛店铺",
+            "咨询商品",
+            "热销商品",
+            "发消息…",
+            "发消息",
+            "当前在线",
+            "按住说话",
+            "相互关注",
+            "开始聊天",
         )
         val INBOX_CHROME_TITLE_PREFIX = listOf(
             "活动",
@@ -637,5 +669,18 @@ class ContentExtractors(
             "按住说话",
         )
         val DM_CHROME_CONTAINS = listOf("相互关注", "开始聊天")
+        // Message bodies scraped as list rows often start with these openers.
+        val MESSAGE_OPENER_PREFIX = listOf(
+            "你好",
+            "您好",
+            "请问",
+            "在吗",
+            "哈喽",
+            "嗨，",
+            "嗨,",
+            "亲，",
+            "亲,",
+            "老板",
+        )
     }
 }

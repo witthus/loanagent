@@ -70,6 +70,70 @@ class LeadRecord:
     note: str | None
     created_at: datetime
     updated_at: datetime
+    account_id: str | None = None
+    title_summary: str | None = None
+
+
+_INBOX_CHROME_TITLES = frozenset(
+    {
+        "搜索",
+        "直播广场",
+        "更多宝藏摊主",
+        "活动详情",
+        "赞和收藏",
+        "粉丝",
+        "系统通知",
+        "陌生人消息",
+        "草稿箱",
+        "消息",
+        "新增关注",
+        "评论和@",
+        "逛逛店铺",
+        "咨询商品",
+        "热销商品",
+        "发消息…",
+        "发消息",
+        "当前在线",
+        "按住说话",
+        "相互关注",
+        "开始聊天",
+        "近期互动热门",
+        "你可能感兴趣",
+        "可能感兴趣的人",
+        "为你推荐",
+        "发现好友",
+        "通讯录好友",
+    }
+)
+
+
+_MESSAGE_OPENER_PREFIXES = (
+    "你好",
+    "您好",
+    "请问",
+    "在吗",
+    "哈喽",
+    "嗨，",
+    "嗨,",
+    "亲，",
+    "亲,",
+    "老板",
+)
+
+
+def _is_plausible_inbox_title(title: str) -> bool:
+    value = (title or "").strip()
+    if not value or value in _INBOX_CHROME_TITLES:
+        return False
+    if value.startswith("发消息"):
+        return False
+    if any(value.startswith(prefix) for prefix in _MESSAGE_OPENER_PREFIXES):
+        return False
+    if any(ch in value for ch in ("。", "？", "！", "?", "!")):
+        return False
+    if len(value) > 48:
+        return False
+    return True
 
 
 class InboxService:
@@ -125,7 +189,9 @@ class InboxService:
                 (account_id,),
             )
             for item in threads:
-                title_summary = str(item["title_summary"])
+                title_summary = str(item["title_summary"]).strip()
+                if not _is_plausible_inbox_title(title_summary):
+                    continue
                 preview_summary = item.get("preview_summary")
                 if preview_summary is not None:
                     preview_summary = str(preview_summary)
@@ -255,9 +321,11 @@ class InboxService:
         with psycopg.connect(self.database_url) as connection:
             rows = connection.execute(
                 """
-                SELECT lead_id, thread_id, status, note, created_at, updated_at
-                FROM leads
-                ORDER BY updated_at DESC, lead_id
+                SELECT l.lead_id, l.thread_id, l.status, l.note, l.created_at, l.updated_at,
+                    t.account_id, t.title_summary
+                FROM leads l
+                JOIN inbox_threads t ON t.thread_id = l.thread_id
+                ORDER BY l.updated_at DESC, l.lead_id
                 """
             ).fetchall()
         return [_lead_from_row(row) for row in rows]
@@ -457,4 +525,6 @@ def _lead_from_row(row: tuple) -> LeadRecord:
         note=row[3],
         created_at=row[4],
         updated_at=row[5],
+        account_id=str(row[6]) if len(row) > 6 and row[6] is not None else None,
+        title_summary=str(row[7]) if len(row) > 7 and row[7] is not None else None,
     )

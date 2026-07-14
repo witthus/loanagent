@@ -435,6 +435,41 @@ class ContentExtractorsTest {
     }
 
     @Test
+    fun rejectsOpenDmComposerChromeAsInboxThreads() {
+        val nodes = listOf(
+            UiNode(text = "静生百慧茶叶馆"),
+            UiNode(text = "当前在线"),
+            UiNode(text = "逛逛店铺", clickable = true),
+            UiNode(text = "发消息…", clickable = true),
+            UiNode(text = "你好茶叶不错"),
+            UiNode(text = "按住说话", clickable = true),
+        )
+        assertTrue(extractor.looksLikeOpenDmComposer(nodes))
+        assertFalse(extractor.looksLikeInboxListSurface(nodes))
+        val threads = extractor.extractInboxThreads(nodes, maxItems = 10)
+        assertTrue(threads.isEmpty())
+    }
+
+    @Test
+    fun rejectsSentenceLikeBodiesAndShopCtaAsInboxTitles() {
+        val nodes = listOf(
+            UiNode(text = "消息"),
+            UiNode(text = "赞和收藏"),
+            UiNode(text = "陌生人消息"),
+            UiNode(text = "系统通知"),
+            UiNode(text = "逛逛店铺", clickable = true),
+            UiNode(text = "你好茶叶不错", clickable = true),
+            UiNode(text = "静生百慧茶叶馆", clickable = true),
+            UiNode(text = "云测私信请忽略"),
+        )
+        // Hub without composer: chrome / sentence bodies filtered out of titles.
+        val threads = extractor.extractInboxThreads(nodes, maxItems = 10)
+        assertEquals(1, threads.size)
+        assertEquals("静生百慧茶叶馆", threads[0].titleSummary)
+        assertTrue(threads.none { it.titleSummary in setOf("逛逛店铺", "你好茶叶不错") })
+    }
+
+    @Test
     fun extractsInboxThreadWhenTitleTextViewIsNotClickable() {
         val nodes = listOf(
             UiNode(text = "消息"),

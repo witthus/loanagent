@@ -7,6 +7,11 @@ interface PlaybookRuntime {
     fun accessibilityAlive(): Boolean
     fun launchXhs(): Boolean
     fun waitForXhsForeground(timeoutMs: Long): Boolean
+    /**
+     * Wake the display and dismiss a non-secure (none / swipe) keyguard.
+     * @return null on success, otherwise an error code such as [ScreenReadyPolicy.ERROR_SECURE_OR_FAILED].
+     */
+    fun ensureScreenReady(timeoutMs: Long = 15_000L): String? = null
     fun currentPageHint(): PageHint?
     fun currentLease(): TargetLease?
     fun observe(): UiSnapshot?

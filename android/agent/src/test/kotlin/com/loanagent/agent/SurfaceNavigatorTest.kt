@@ -12,6 +12,15 @@ import org.robolectric.annotation.Config
 @Config(sdk = [35])
 class SurfaceNavigatorTest {
     @Test
+    fun ensureForegroundFailsWhenScreenNotReady() {
+        val runtime = object : NavFakeRuntime(start = PageHint.HOME) {
+            override fun ensureScreenReady(timeoutMs: Long): String = "SCREEN_NOT_READY"
+        }
+        val result = SurfaceNavigator.ensureForeground(runtime)
+        assertEquals("SCREEN_NOT_READY", (result as NavResult.Failed).errorCode)
+    }
+
+    @Test
     fun goInboxFromHomeSucceeds() {
         val runtime = NavFakeRuntime(start = PageHint.HOME)
         val result = SurfaceNavigator.goInbox(runtime)
@@ -115,7 +124,7 @@ class SurfaceNavigatorTest {
     }
 
     /** Fake that transitions surfaces when navigator clicks/taps expected chrome. */
-    private class NavFakeRuntime(
+    private open class NavFakeRuntime(
         start: PageHint,
         private val threads: List<ExtractedInboxThread> = emptyList(),
         private val noteTitles: List<String> = emptyList(),

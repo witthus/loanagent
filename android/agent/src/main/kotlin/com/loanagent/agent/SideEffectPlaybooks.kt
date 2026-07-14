@@ -14,11 +14,9 @@ class PublishNotePlaybook : Playbook {
         if (!runtime.accessibilityAlive()) {
             return PlaybookResult.failed(taskId, "A11Y_DOWN")
         }
-        if (!runtime.waitForXhsForeground(8_000)) {
-            runtime.launchXhs()
-            if (!runtime.waitForXhsForeground(15_000)) {
-                return PlaybookResult.failed(taskId, "XHS_NOT_FOREGROUND")
-            }
+        when (val nav = SurfaceNavigator.ensureForeground(runtime)) {
+            is NavResult.Failed -> return PlaybookResult.failed(taskId, nav.errorCode)
+            NavResult.Ok -> Unit
         }
 
         val startInEditor = command.boolParam("start_in_editor")
@@ -64,18 +62,18 @@ class PublishNotePlaybook : Playbook {
             }
         }
 
-        if (!runtime.setText("text=添加标题", title, timeoutMs = 12_000) &&
-            !runtime.setText("contentDescription=添加标题", title, timeoutMs = 8_000)
-        ) {
+        if (!fillPublishField(runtime, TITLE_HINTS, title, editableIndex = 0)) {
             return PlaybookResult.failed(
                 taskId,
                 if (startInEditor) "SET_TEXT_FAILED" else "EDITOR_NOT_READY",
             )
         }
         runtime.sleep(400)
-        if (!runtime.setText("text=添加正文", body, timeoutMs = 12_000) &&
-            !runtime.setText("contentDescription=添加正文", body, timeoutMs = 8_000)
-        ) {
+        if (!fillPublishField(runtime, BODY_HINTS, body, editableIndex = 1)) {
+            return PlaybookResult.failed(taskId, "SET_TEXT_FAILED")
+        }
+        runtime.sleep(400)
+        if (!fieldLooksFilled(runtime, body)) {
             return PlaybookResult.failed(taskId, "SET_TEXT_FAILED")
         }
         runtime.sleep(500)
@@ -91,6 +89,101 @@ class PublishNotePlaybook : Playbook {
                 "title_summary" to title.take(TITLE_SUMMARY_LIMIT),
             ),
         )
+    }
+
+    /**
+     * Fill title/body. XHS body EditText often needs an explicit focus tap before
+     * ACTION_SET_TEXT / clipboard paste; hint copy also drifts across versions.
+     * After focus, className match may hit both title+body — runtime prefers focused.
+     */
+    private fun fillPublishField(
+        runtime: PlaybookRuntime,
+        hints: List<String>,
+        text: String,
+        editableIndex: Int,
+    ): Boolean {
+        fun tryHints(): Boolean =
+            hints.any { hint ->
+                runtime.setText("text=$hint", text, timeoutMs = 5_000) ||
+                    runtime.setText("contentDescription=$hint", text, timeoutMs = 3_000)
+            }
+
+        if (tryHints() && fieldLooksFilled(runtime, text)) return true
+
+        for (hint in hints) {
+            val focused =
+                tapLabeled(runtime, hint) ||
+                    runtime.click("text=$hint", allowFinal = false, timeoutMs = 2_000) ||
+                    runtime.click("contentDescription=$hint", allowFinal = false, timeoutMs = 2_000)
+            if (!focused) continue
+            runtime.sleep(600)
+            if (tryHints() && fieldLooksFilled(runtime, text)) return true
+            // Focused node should win className disambiguation after the tap.
+            if (
+                runtime.setText("className=android.widget.EditText", text, timeoutMs = 8_000) &&
+                fieldLooksFilled(runtime, text)
+            ) {
+                return true
+            }
+        }
+
+        return setTextOnNthEditable(runtime, editableIndex, text, hints)
+    }
+
+    private fun setTextOnNthEditable(
+        runtime: PlaybookRuntime,
+        index: Int,
+        text: String,
+        hints: List<String>,
+    ): Boolean {
+        val snapshot = runtime.observe() ?: return false
+        val editables = snapshot.nodes
+            .filter { it.editable && it.bounds?.isUsable == true }
+            .sortedWith(compareBy({ it.bounds!!.top }, { it.bounds!!.left }))
+        val target = editables.getOrNull(index)
+            ?: editables.lastOrNull { node ->
+                val label = node.text?.trim().orEmpty()
+                label.isEmpty() || hints.any { it == label }
+            }
+            ?: return false
+        val bounds = target.bounds ?: return false
+        runtime.tap(bounds.centerX, bounds.centerY)
+        runtime.sleep(700)
+
+        val label = target.text?.trim().orEmpty()
+        if (label.isNotEmpty() && runtime.setText("text=$label", text, timeoutMs = 8_000) &&
+            fieldLooksFilled(runtime, text)
+        ) {
+            return true
+        }
+        if (hints.any { hint ->
+                runtime.setText("text=$hint", text, timeoutMs = 4_000) ||
+                    runtime.setText("contentDescription=$hint", text, timeoutMs = 3_000)
+            } && fieldLooksFilled(runtime, text)
+        ) {
+            return true
+        }
+
+        // Prefer focused EditText among title+body after the tap above.
+        if (
+            runtime.setText("className=android.widget.EditText", text, timeoutMs = 8_000) &&
+            fieldLooksFilled(runtime, text)
+        ) {
+            return true
+        }
+        return runtime.setText("className=android.widget.EditText;clickable=true", text, timeoutMs = 4_000) &&
+            fieldLooksFilled(runtime, text)
+    }
+
+    /** Confirm the typed value actually appears (avoid false SUCCESS on empty body publish). */
+    private fun fieldLooksFilled(runtime: PlaybookRuntime, expected: String): Boolean {
+        val needle = expected.trim().take(12)
+        if (needle.isEmpty()) return true
+        val snapshot = runtime.observe() ?: return false
+        return snapshot.nodes.any { node ->
+            val value = node.text?.trim().orEmpty()
+            value.contains(needle) || value == expected.trim()
+        }
     }
 
     /**
@@ -181,12 +274,25 @@ class PublishNotePlaybook : Playbook {
         return snapshot.nodes.any { n ->
             val t = n.text.orEmpty()
             val d = n.contentDescription.orEmpty()
-            t == "添加标题" || d == "添加标题" || t == "发布笔记" || d == "发布笔记"
+            t == "添加标题" || d == "添加标题" ||
+                t == "添加正文" || d == "添加正文" ||
+                t == "发布笔记" || d == "发布笔记" ||
+                TITLE_HINTS.any { it == t || it == d } ||
+                BODY_HINTS.any { it == t || it == d }
         }
     }
 
     companion object {
         private const val TITLE_SUMMARY_LIMIT = 64
+        private val TITLE_HINTS = listOf("添加标题", "填写标题", "标题")
+        private val BODY_HINTS = listOf(
+            "添加正文",
+            "添加正文描述",
+            "填写正文",
+            "正文",
+            "说点什么",
+            "说点什么…",
+        )
     }
 }
 
@@ -310,21 +416,11 @@ class ReplyDmPlaybook : Playbook {
         }
         val titleHint = command.stringParam("open_title_hint")
             ?: command.stringParam("thread_title")
-        val alreadyOpen = runtime.looksLikeOpenDmThreadSurface()
-        if (!alreadyOpen) {
-            val pageBefore = runtime.currentPageHint()
-            val composerReady = pageBefore == PageHint.INBOX || pageBefore == PageHint.UNKNOWN ||
-                pageBefore == null
-            if (titleHint != null) {
-                val nav = SurfaceNavigator.goDmThread(runtime, titleHint)
-                if (nav is NavResult.Failed) {
-                    return PlaybookResult.failed(taskId, nav.errorCode)
-                }
-            } else if (!composerReady) {
-                return PlaybookResult.failed(taskId, "NAV_MISSING_HINT")
-            } else if (pageBefore != PageHint.INBOX && pageBefore != PageHint.UNKNOWN && pageBefore != null) {
-                return PlaybookResult.failed(taskId, "WRONG_PAGE")
-            }
+            ?: return PlaybookResult.failed(taskId, "NAV_MISSING_HINT")
+        // Always navigate home → inbox → thread; never reuse the current chat surface.
+        val nav = SurfaceNavigator.goDmThread(runtime, titleHint)
+        if (nav is NavResult.Failed) {
+            return PlaybookResult.failed(taskId, nav.errorCode)
         }
         val hint = runtime.currentPageHint()
         val inputSelectors = listOf(
@@ -340,7 +436,7 @@ class ReplyDmPlaybook : Playbook {
             runtime.tap(command.intParam("composer_tap_x", 540), command.intParam("composer_tap_y", 2200))
             runtime.sleep(800)
             if (!tryType()) {
-                return if (hint == PageHint.INBOX || hint == PageHint.UNKNOWN || alreadyOpen) {
+                return if (hint == PageHint.INBOX || hint == PageHint.UNKNOWN || runtime.looksLikeOpenDmThreadSurface()) {
                     PlaybookResult.failed(taskId, "SET_TEXT_FAILED")
                 } else {
                     PlaybookResult.failed(taskId, "WRONG_PAGE")

@@ -10,6 +10,9 @@ class EnsureAppReadyPlaybook(
         if (!runtime.accessibilityAlive()) {
             return PlaybookResult.failed(taskId, "A11Y_DOWN")
         }
+        runtime.ensureScreenReady(timeoutMs)?.let { code ->
+            return PlaybookResult.failed(taskId, code)
+        }
         runtime.launchXhs()
         if (!runtime.waitForXhsForeground(timeoutMs)) {
             return PlaybookResult.failed(taskId, "XHS_NOT_FOREGROUND")

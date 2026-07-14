@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Literal
 import os
 
-from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
@@ -17,12 +17,26 @@ from loanagent.accounts import (
     AccountNotFoundError,
     AccountRepository,
 )
+from loanagent.agent_release import (
+    AgentReleaseNotFoundError,
+    load_latest_release,
+    resolve_apk_path,
+    resolve_guide_pdf_path,
+)
 from loanagent.auth import require_device, require_ops
 from loanagent.content import ContentRepository
 from loanagent.content_routes import router as content_router
 from loanagent.db import migrate_fleet_schema
 from loanagent.devices import DeviceNotFoundError, DeviceRepository
 from loanagent.engagement import EngagementService
+from loanagent.geo_ip import (
+    begin_geo_refresh,
+    cached_geo_label,
+    end_geo_refresh,
+    extract_client_ip,
+    lookup_geo_label,
+    needs_geo_refresh,
+)
 from loanagent.engagement_routes import router as engagement_router
 from loanagent.enrollment import (
     DeviceIdentity,
@@ -48,6 +62,7 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
     enrollment_repository = EnrollmentRepository(database_url)
     enrollment_repository.migrate()
     migrate_fleet_schema(database_url)
+    application.state.database_url = database_url
     application.state.enrollment_repository = enrollment_repository
     application.state.device_repository = DeviceRepository(database_url)
     application.state.account_repository = AccountRepository(database_url)
@@ -122,6 +137,8 @@ class DeviceHeartbeatPayload(BaseModel):
     wifi_connected: bool | None = None
     a11y_bound: bool | None = None
     cellular_ok: bool | None = None
+    manufacturer: str | None = Field(default=None, min_length=1, max_length=128)
+    model: str | None = Field(default=None, min_length=1, max_length=128)
 
 
 class AccountCreatePayload(BaseModel):
@@ -196,9 +213,38 @@ def heartbeat_device(
     device_id: str,
     payload: DeviceHeartbeatPayload,
     request: Request,
+    background_tasks: BackgroundTasks,
 ) -> dict:
     repository: DeviceRepository = request.app.state.device_repository
-    return asdict(repository.heartbeat(device_id=device_id, **payload.model_dump()))
+    public_ip = extract_client_ip(request)
+    # Never block the heartbeat path on upstream geo HTTP.
+    geo_label = cached_geo_label(public_ip)
+    record = repository.heartbeat(
+        device_id=device_id,
+        public_ip=public_ip,
+        geo_label=geo_label,
+        **payload.model_dump(),
+    )
+    if public_ip and needs_geo_refresh(public_ip) and begin_geo_refresh(public_ip):
+        background_tasks.add_task(
+            _refresh_device_geo_background,
+            request.app.state.database_url,
+            device_id,
+            public_ip,
+        )
+    return asdict(record)
+
+
+def _refresh_device_geo_background(database_url: str, device_id: str, public_ip: str) -> None:
+    try:
+        label = lookup_geo_label(public_ip, force_refresh=True)
+        DeviceRepository(database_url).update_geo_if_ip_matches(
+            device_id,
+            public_ip=public_ip,
+            geo_label=label,
+        )
+    finally:
+        end_geo_refresh(public_ip)
 
 
 @app.get("/api/v1/devices", dependencies=[Depends(require_ops)])
@@ -337,6 +383,55 @@ def _account_http_error(status_code: int, code: str, message: str) -> HTTPExcept
     return HTTPException(status_code=status_code, detail={"code": code, "message": message})
 
 
+@app.get("/api/v1/agent/latest", dependencies=[Depends(require_ops)])
+def get_latest_agent_release() -> dict:
+    return load_latest_release().as_public_dict()
+
+
+@app.get("/downloads/agent-latest.apk")
+def download_latest_agent_apk() -> FileResponse:
+    """Public APK download so phones can install without ops login.
+
+    Intentionally unauthenticated for onboarding. Debug builds embed DEVICE_TOKEN —
+    treat published APKs as UNTRUSTED_DEBUG_TEST_ONLY.
+    """
+    try:
+        path = resolve_apk_path()
+    except AgentReleaseNotFoundError as error:
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "AGENT_APK_NOT_FOUND", "message": "Agent APK is not published."},
+        ) from error
+    return FileResponse(
+        path,
+        media_type="application/vnd.android.package-archive",
+        filename="matrix-assistant-agent.apk",
+        content_disposition_type="attachment",
+        headers={"X-Loanagent-Classification": "UNTRUSTED_DEBUG_TEST_ONLY"},
+    )
+
+
+@app.get("/downloads/device-bind-guide.pdf")
+def download_device_bind_guide_pdf() -> FileResponse:
+    """Public install guide PDF for new-device binding."""
+    try:
+        path = resolve_guide_pdf_path()
+    except AgentReleaseNotFoundError as error:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "code": "GUIDE_PDF_NOT_FOUND",
+                "message": "Device bind guide PDF is not published.",
+            },
+        ) from error
+    return FileResponse(
+        path,
+        media_type="application/pdf",
+        filename="矩阵助手-新设备绑定安装指引.pdf",
+        content_disposition_type="attachment",
+    )
+
+
 def _ops_web_dist() -> Path | None:
     candidates = [
         Path(os.environ.get("OPS_WEB_DIST", "")),
@@ -369,7 +464,7 @@ def spa_login() -> FileResponse:
 @app.get("/{full_path:path}")
 def spa_fallback(full_path: str) -> FileResponse:
     # Never shadow API or infra routes if routing order changes.
-    blocked_prefixes = ("api/", "ops/", "docs", "redoc", "openapi.json", "enroll")
+    blocked_prefixes = ("api/", "ops/", "docs", "redoc", "openapi.json", "enroll", "downloads/")
     if full_path in {"health", "openapi.json", "redoc", "docs"} or full_path.startswith(
         blocked_prefixes
     ):

@@ -366,9 +366,9 @@ class M0ExecutionIntegrationTest {
     }
 
     @Test
-    fun setTextFailureUsesProductionInputStrategyAndRequiresManualIme() {
+    fun setTextFailureFallsBackToClipboardEvenWhenImeEnabled() {
         val port = FakeAutomationPort(setTextAccepted = false, imeEnabled = true)
-        val text = "manual ime diagnostic"
+        val text = "clipboard with ime enabled"
         val result = execute(
             port,
             ActionRequest(
@@ -379,11 +379,12 @@ class M0ExecutionIntegrationTest {
             ),
         )
 
-        assertEquals(ActionStatus.IME_FALLBACK_REQUIRED, result.status)
-        assertEquals(ExecutionStage.IME_FALLBACK_REQUIRED, result.stage)
-        assertTrue(result.message.contains("input_route=MANUAL_IME"))
+        assertEquals(ActionStatus.SUCCESS, result.status)
+        assertEquals(ExecutionStage.ACTION_ACCEPTED, result.stage)
+        assertTrue(result.message.contains("input_route=CLIPBOARD"))
         assertTrue(result.message.contains("input_length=${text.length}"))
         assertFalse(result.message.contains(text))
+        assertEquals(1, port.clipboardPasteCalls)
         assertFalse(port.silentImeSwitchAttempted)
     }
 
