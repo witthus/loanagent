@@ -385,6 +385,30 @@ def migrate_fleet_schema(database_url: str) -> None:
             )
             _record_migration(connection, 20)
 
+        if 21 not in applied:
+            # Repair hosts where migration 20 was recorded without schema changes.
+            connection.execute(
+                """
+                ALTER TABLE tasks
+                ALTER COLUMN device_id DROP NOT NULL
+                """
+            )
+            connection.execute(
+                """
+                ALTER TABLE tasks
+                DROP CONSTRAINT IF EXISTS tasks_device_id_fkey
+                """
+            )
+            connection.execute(
+                """
+                ALTER TABLE tasks
+                ADD CONSTRAINT tasks_device_id_fkey
+                FOREIGN KEY (device_id) REFERENCES devices(device_id)
+                ON DELETE SET NULL
+                """
+            )
+            _record_migration(connection, 21)
+
 
 def _record_migration(connection: psycopg.Connection, version: int) -> None:
     connection.execute(

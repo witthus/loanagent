@@ -188,11 +188,19 @@ class DeviceRepository:
             connection.execute(
                 """
                 UPDATE tasks
-                SET status = 'cancelled',
-                    error_code = COALESCE(error_code, 'DEVICE_DELETED'),
+                SET status = CASE
+                        WHEN status IN ('queued', 'accepted', 'executing')
+                            THEN 'cancelled'
+                        ELSE status
+                    END,
+                    error_code = CASE
+                        WHEN status IN ('queued', 'accepted', 'executing')
+                            THEN COALESCE(error_code, 'DEVICE_DELETED')
+                        ELSE error_code
+                    END,
+                    device_id = NULL,
                     updated_at = CURRENT_TIMESTAMP
                 WHERE device_id = %s
-                  AND status IN ('queued', 'accepted', 'executing')
                 """,
                 (device_id,),
             )
