@@ -10,8 +10,21 @@ import android.view.inputmethod.InputMethodManager
 import android.widget.Button
 import android.widget.EditText
 import android.widget.LinearLayout
+import java.lang.ref.WeakReference
 
 class M0InputMethodService : InputMethodService() {
+    override fun onCreate() {
+        super.onCreate()
+        active = WeakReference(this)
+    }
+
+    override fun onDestroy() {
+        if (active?.get() === this) {
+            active = null
+        }
+        super.onDestroy()
+    }
+
     override fun onCreateInputView(): View {
         val input = EditText(this).apply {
             hint = "M0 手动输入（不保存）"
@@ -51,6 +64,22 @@ class M0InputMethodService : InputMethodService() {
 
     companion object {
         private const val MAX_INPUT_LENGTH = 4_000
+        @Volatile
+        private var active: WeakReference<M0InputMethodService>? = null
+
+        /**
+         * Commit into the focused editor through the live InputConnection.
+         * Used when ACTION_SET_TEXT / clipboard fail on XHS custom composers while
+         * Loanagent IME is selected — avoids relying on a11y clicks of the IME chrome.
+         */
+        fun commitIntoFocusedEditor(text: String): Boolean {
+            val service = active?.get() ?: return false
+            val connection = service.currentInputConnection ?: return false
+            val payload = text.take(MAX_INPUT_LENGTH)
+            if (payload.isEmpty()) return false
+            service.clearText(connection)
+            return service.commitText(connection, payload)
+        }
 
         fun status(context: Context): ImeStatus {
             val expected = ComponentName(context, M0InputMethodService::class.java)

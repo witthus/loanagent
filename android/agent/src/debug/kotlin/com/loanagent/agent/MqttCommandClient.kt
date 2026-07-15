@@ -15,92 +15,156 @@ import java.util.concurrent.atomic.AtomicBoolean
  */
 class MqttCommandClient(
     private val onCommand: (String) -> Unit,
+    private val socketFactory: () -> Socket = ::Socket,
+    private val joinTimeoutMs: Long = 2_000,
 ) {
     private val started = AtomicBoolean(false)
+    private val lifecycle = Any()
+    private val socketLock = Any()
     @Volatile private var socket: Socket? = null
     @Volatile private var out: DataOutputStream? = null
+    @Volatile private var worker: Thread? = null
 
     fun start() {
-        if (!started.compareAndSet(false, true)) return
-        Thread(
-            {
-                while (started.get()) {
+        synchronized(lifecycle) {
+            if (worker?.isAlive == true) return
+            if (!started.compareAndSet(false, true)) return
+            val thread = Thread(
+                {
                     try {
-                        runSession()
-                    } catch (error: Exception) {
-                        Log.w(TAG, "mqtt session ended", error)
-                    }
-                    if (started.get()) {
-                        try {
-                            Thread.sleep(3_000)
-                        } catch (_: InterruptedException) {
-                            break
+                        while (started.get()) {
+                            try {
+                                runSession()
+                            } catch (error: Exception) {
+                                if (started.get()) Log.w(TAG, "mqtt session ended", error)
+                            }
+                            if (started.get()) {
+                                try {
+                                    Thread.sleep(3_000)
+                                } catch (_: InterruptedException) {
+                                    break
+                                }
+                            }
                         }
+                    } finally {
+                        started.set(false)
                     }
-                }
-            },
-            "cloud-mqtt",
-        ).apply { isDaemon = true }.start()
-    }
-
-    fun stop() {
-        started.set(false)
-        try {
-            socket?.close()
-        } catch (_: Exception) {
-        } finally {
-            socket = null
-            out = null
+                },
+                "cloud-mqtt",
+            ).apply { isDaemon = true }
+            // Publish worker before Thread.start so stop() cannot miss it.
+            worker = thread
+            thread.start()
         }
     }
+
+    fun stop(): Boolean {
+        synchronized(lifecycle) {
+            started.set(false)
+            val activeSocket = synchronized(socketLock) { socket }
+            try {
+                activeSocket?.close()
+            } catch (_: Exception) {
+            }
+            val thread = worker
+            thread?.interrupt()
+            // Thread.join(0) waits forever; non-positive means do not block.
+            if (thread != null && thread !== Thread.currentThread() && joinTimeoutMs > 0) {
+                try {
+                    thread.join(joinTimeoutMs)
+                } catch (_: InterruptedException) {
+                    Thread.currentThread().interrupt()
+                }
+            }
+            val terminated = thread?.isAlive != true
+            if (terminated) {
+                worker = null
+                synchronized(socketLock) {
+                    socket = null
+                }
+                out = null
+            }
+            return terminated
+        }
+    }
+
+    internal fun workerAlive(): Boolean = worker?.isAlive == true
 
     private fun runSession() {
-        val sock = Socket()
-        sock.soTimeout = 45_000
-        sock.connect(
-            InetSocketAddress(CloudBridgeConfig.MQTT_HOST, CloudBridgeConfig.MQTT_PORT),
-            10_000,
-        )
-        socket = sock
-        val input = DataInputStream(sock.getInputStream())
-        val output = DataOutputStream(sock.getOutputStream())
-        out = output
-        val clientId = "la-${CloudBridgeConfig.DEVICE_ID}-${System.currentTimeMillis() % 100000}"
-        writePacket(output, 0x10, connectPayload(clientId))
-        val connack = readPacket(input)
-        if (connack.type != 0x20 || connack.payload.size < 2 || connack.payload[1] != 0.toByte()) {
-            throw IllegalStateException("MQTT CONNACK failed")
-        }
-        val topic = CloudBridgeConfig.commandsTopic()
-        writePacket(output, 0x82, subscribePayload(1, topic))
-        val suback = readPacket(input)
-        if (suback.type != 0x90) {
-            throw IllegalStateException("MQTT SUBACK missing")
-        }
-        Log.i(TAG, "mqtt subscribed $topic")
-        while (started.get() && !sock.isClosed) {
-            val packet = try {
-                readPacket(input)
-            } catch (_: java.net.SocketTimeoutException) {
-                writePacket(output, 0xC0, ByteArray(0))
-                continue
+        val sock = socketFactory()
+        val accepted = synchronized(socketLock) {
+            if (started.get()) {
+                socket = sock
+                true
+            } else {
+                false
             }
-            when (packet.type and 0xF0) {
-                0x30 -> {
-                    val (msgTopic, payload, packetId, qos) = parsePublish(packet.type, packet.payload)
-                    if (msgTopic == topic) {
-                        onCommand(payload)
-                    }
-                    if (qos == 1 && packetId != null) {
-                        writePacket(
-                            output,
-                            0x40,
-                            byteArrayOf((packetId shr 8).toByte(), (packetId and 0xff).toByte()),
-                        )
-                    }
+        }
+        if (!accepted) {
+            try {
+                sock.close()
+            } catch (_: Exception) {
+            }
+            return
+        }
+        try {
+            sock.soTimeout = 45_000
+            sock.connect(
+                InetSocketAddress(CloudBridgeConfig.MQTT_HOST, CloudBridgeConfig.MQTT_PORT),
+                10_000,
+            )
+            if (!started.get()) return
+            val input = DataInputStream(sock.getInputStream())
+            val output = DataOutputStream(sock.getOutputStream())
+            out = output
+            val clientId = "la-${CloudBridgeConfig.DEVICE_ID}-${System.currentTimeMillis() % 100000}"
+            writePacket(output, 0x10, connectPayload(clientId))
+            val connack = readPacket(input)
+            if (connack.type != 0x20 || connack.payload.size < 2 || connack.payload[1] != 0.toByte()) {
+                throw IllegalStateException("MQTT CONNACK failed")
+            }
+            val topic = CloudBridgeConfig.commandsTopic()
+            writePacket(output, 0x82, subscribePayload(1, topic))
+            val suback = readPacket(input)
+            if (suback.type != 0x90) {
+                throw IllegalStateException("MQTT SUBACK missing")
+            }
+            Log.i(TAG, "mqtt subscribed $topic")
+            while (started.get() && !sock.isClosed) {
+                val packet = try {
+                    readPacket(input)
+                } catch (_: java.net.SocketTimeoutException) {
+                    writePacket(output, 0xC0, ByteArray(0))
+                    continue
                 }
-                0xD0 -> Unit // PINGRESP
-                else -> Unit
+                when (packet.type and 0xF0) {
+                    0x30 -> {
+                        val (msgTopic, payload, packetId, qos) = parsePublish(packet.type, packet.payload)
+                        if (msgTopic == topic) {
+                            onCommand(payload)
+                        }
+                        if (qos == 1 && packetId != null) {
+                            writePacket(
+                                output,
+                                0x40,
+                                byteArrayOf((packetId shr 8).toByte(), (packetId and 0xff).toByte()),
+                            )
+                        }
+                    }
+                    0xD0 -> Unit // PINGRESP
+                    else -> Unit
+                }
+            }
+        } finally {
+            try {
+                sock.close()
+            } catch (_: Exception) {
+            }
+            synchronized(socketLock) {
+                if (socket === sock) {
+                    socket = null
+                    out = null
+                }
             }
         }
     }

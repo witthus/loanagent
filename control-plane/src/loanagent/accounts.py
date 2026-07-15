@@ -7,7 +7,7 @@ from typing import Any
 import psycopg
 
 from loanagent.db import migrate_fleet_schema
-from loanagent.platforms import DEFAULT_PLATFORM, normalize_platform
+from loanagent.platforms import normalize_platform
 from loanagent.roles import AccountRole
 
 

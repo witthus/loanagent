@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
-from uuid import uuid4
+from uuid import NAMESPACE_URL, uuid4, uuid5
 
 import psycopg
 from psycopg.types.json import Jsonb
@@ -12,10 +12,12 @@ from loanagent.db import migrate_fleet_schema
 from loanagent.platforms import DEFAULT_PLATFORM, normalize_platform
 from loanagent.roles import AccountRole
 from loanagent.tasks import (
+    DuplicateTaskError,
     TaskAccessibilityDownError,
     TaskAccountNotFoundError,
     TaskAccountUnavailableError,
     TaskDeviceUnavailableError,
+    TaskDispatchAmbiguousError,
     TaskDispatchError,
     TaskRecord,
     TaskService,
@@ -97,16 +99,14 @@ class EngagementService:
         note_ref = publish_task.params.get("note_ref")
         if note_ref is not None:
             note_ref = str(note_ref)
-        platform = normalize_platform(
-            str(publish_task.params.get("platform") or DEFAULT_PLATFORM)
-        )
+        platform = normalize_platform(str(publish_task.params.get("platform") or DEFAULT_PLATFORM))
         engager_account_id = self._pick_engager_account(platform=platform)
         engager_ids = [engager_account_id] if engager_account_id else []
         chain_id = str(uuid4())
         status = "pending"
         stop_reason: str | None = None
 
-        if (engager_account_id is None):
+        if engager_account_id is None:
             status = "stopped"
             stop_reason = "NO_ENGAGER_AVAILABLE"
             # Expected in V1 single-publisher fleets — do not raise product alerts.
@@ -155,6 +155,12 @@ class EngagementService:
             return existing
 
         publish_task = self.task_service.get(publish_task_id)
+        if publish_task.status != "succeeded" or not publish_task.effect_committed:
+            raise ValueError(
+                "publish task must be succeeded with effect_committed before manual engagement"
+            )
+        if not publish_task.playbook.startswith("publish_note"):
+            raise ValueError("publish_task_id must reference a publish_note task")
         platform_value = normalize_platform(
             platform or str(publish_task.params.get("platform") or DEFAULT_PLATFORM)
         )
@@ -194,6 +200,13 @@ class EngagementService:
         chain = self.get(chain_id)
         if chain.status == "pending":
             return self._advance_pending(chain)
+        if chain.status == "running" and chain.post_comment_task_ids:
+            return self._recover_post_comment_dispatch(chain)
+        if chain.status == "awaiting_reply" and chain.reply_comment_task_ids:
+            return self._recover_reply_dispatch(
+                chain,
+                source_task_id=chain.post_comment_task_ids[0],
+            )
         return chain
 
     def on_task_event(
@@ -302,14 +315,22 @@ class EngagementService:
         if elapsed < delay_sec:
             return chain
 
-        comment_text = str(
-            chain.config.get("comment_text", DEFAULT_CONFIG["comment_text"])
-        )
+        comment_text = str(chain.config.get("comment_text", DEFAULT_CONFIG["comment_text"]))
         note_ref = chain.note_ref or chain.publish_task_id
         last_error: Exception | None = None
         for engager in candidates:
+            task_id, operation_id = _engagement_task_identity(
+                chain.chain_id,
+                step="post_comment",
+                source_task_id=chain.publish_task_id,
+                account_id=engager,
+            )
+
+            def associate_post_comment(task: TaskRecord) -> None:
+                self._associate_post_comment(chain.chain_id, task)
+
             try:
-                task = self.task_service.create_and_dispatch(
+                task = self.task_service.create_and_dispatch_idempotent(
                     account_id=engager,
                     playbook="post_comment@1.0",
                     params={
@@ -317,8 +338,13 @@ class EngagementService:
                         "note_ref": note_ref,
                         "chain_id": chain.chain_id,
                     },
+                    task_id=task_id,
+                    operation_id=operation_id,
                     source="scheduler",
+                    before_publish=associate_post_comment,
                 )
+            except TaskDispatchAmbiguousError:
+                return self._mark_reconciliation_required(chain.chain_id)
             except (
                 TaskAccountNotFoundError,
                 TaskAccountUnavailableError,
@@ -328,20 +354,21 @@ class EngagementService:
             ) as error:
                 last_error = error
                 continue
-            with psycopg.connect(self.database_url) as connection:
-                row = connection.execute(
-                    f"""
-                    UPDATE engagement_chains
-                    SET status = 'running',
-                        engager_account_id = %s,
-                        post_comment_task_ids = %s,
-                        updated_at = CURRENT_TIMESTAMP
-                    WHERE chain_id = %s
-                    RETURNING {_CHAIN_SELECT}
-                    """,
-                    (engager, Jsonb([task.task_id]), chain.chain_id),
-                ).fetchone()
-            return _chain_from_row(row)
+            refreshed = self.get(chain.chain_id)
+            if task.task_id not in refreshed.post_comment_task_ids:
+                self._associate_post_comment(chain.chain_id, task)
+            if task.status == "reconcile_required":
+                return self._mark_reconciliation_required(chain.chain_id)
+            if task.status in {"failed", "cancelled", "unknown"}:
+                last_error = TaskDispatchError(task.task_id)
+                continue
+            if task.status == "succeeded":
+                self.on_task_event(
+                    task,
+                    status=task.status,
+                    error_code=task.error_code,
+                )
+            return self.get(chain.chain_id)
 
         reason = "NO_ENGAGER_AVAILABLE"
         if isinstance(last_error, TaskAccountUnavailableError):
@@ -363,32 +390,171 @@ class EngagementService:
         if task.task_id not in chain.post_comment_task_ids:
             return
         if chain.reply_comment_task_ids:
+            self._recover_reply_dispatch(chain, source_task_id=task.task_id)
             return
 
         reply_text = str(chain.config.get("reply_text", DEFAULT_CONFIG["reply_text"]))
         note_ref = chain.note_ref or chain.publish_task_id
-        reply = self.task_service.create_and_dispatch(
+        task_id, operation_id = _engagement_task_identity(
+            chain.chain_id,
+            step="reply_comment",
+            source_task_id=task.task_id,
             account_id=chain.account_id,
-            playbook="reply_comment@1.0",
-            params={
-                "text": reply_text,
-                "note_ref": note_ref,
-                "chain_id": chain.chain_id,
-                "target_comment_task_id": task.task_id,
-            },
-            source="scheduler",
         )
+
+        def associate_reply_comment(reply: TaskRecord) -> None:
+            self._associate_reply_comment(chain.chain_id, reply)
+
+        try:
+            reply = self.task_service.create_and_dispatch_idempotent(
+                account_id=chain.account_id,
+                playbook="reply_comment@1.0",
+                params={
+                    "text": reply_text,
+                    "note_ref": note_ref,
+                    "chain_id": chain.chain_id,
+                    "target_comment_task_id": task.task_id,
+                },
+                task_id=task_id,
+                operation_id=operation_id,
+                source="scheduler",
+                before_publish=associate_reply_comment,
+            )
+        except TaskDispatchAmbiguousError:
+            self._mark_reconciliation_required(chain.chain_id)
+            return
+        refreshed = self.get(chain.chain_id)
+        if reply.task_id not in refreshed.reply_comment_task_ids:
+            self._associate_reply_comment(chain.chain_id, reply)
+        if reply.status == "reconcile_required":
+            self._mark_reconciliation_required(chain.chain_id)
+        elif reply.status in {"failed", "cancelled", "unknown"}:
+            self._stop_chain(chain.chain_id, reason="REPLY_TASK_FAILED")
+        elif reply.status == "succeeded":
+            self.on_task_event(
+                reply,
+                status=reply.status,
+                error_code=reply.error_code,
+            )
+
+    def _recover_post_comment_dispatch(
+        self,
+        chain: EngagementChainRecord,
+    ) -> EngagementChainRecord:
+        engager = chain.engager_account_id
+        if engager is None:
+            return self._stop_chain(chain.chain_id, reason="NO_ENGAGER_AVAILABLE")
+        comment_text = str(chain.config.get("comment_text", DEFAULT_CONFIG["comment_text"]))
+        note_ref = chain.note_ref or chain.publish_task_id
+        task_id, operation_id = _engagement_task_identity(
+            chain.chain_id,
+            step="post_comment",
+            source_task_id=chain.publish_task_id,
+            account_id=engager,
+        )
+        if chain.post_comment_task_ids != [task_id]:
+            raise DuplicateTaskError(task_id)
+        try:
+            task = self.task_service.create_and_dispatch_idempotent(
+                account_id=engager,
+                playbook="post_comment@1.0",
+                params={
+                    "text": comment_text,
+                    "note_ref": note_ref,
+                    "chain_id": chain.chain_id,
+                },
+                task_id=task_id,
+                operation_id=operation_id,
+                source="scheduler",
+            )
+        except TaskDispatchAmbiguousError:
+            return self._mark_reconciliation_required(chain.chain_id)
+        if task.status == "reconcile_required":
+            return self._mark_reconciliation_required(chain.chain_id)
+        if task.status in {"failed", "cancelled", "unknown"}:
+            return self._stop_chain(chain.chain_id, reason="POST_TASK_FAILED")
+        if task.status == "succeeded":
+            self.on_task_event(task, status=task.status, error_code=task.error_code)
+        return self.get(chain.chain_id)
+
+    def _recover_reply_dispatch(
+        self,
+        chain: EngagementChainRecord,
+        *,
+        source_task_id: str,
+    ) -> EngagementChainRecord:
+        reply_text = str(chain.config.get("reply_text", DEFAULT_CONFIG["reply_text"]))
+        note_ref = chain.note_ref or chain.publish_task_id
+        task_id, operation_id = _engagement_task_identity(
+            chain.chain_id,
+            step="reply_comment",
+            source_task_id=source_task_id,
+            account_id=chain.account_id,
+        )
+        if chain.reply_comment_task_ids != [task_id]:
+            raise DuplicateTaskError(task_id)
+        try:
+            reply = self.task_service.create_and_dispatch_idempotent(
+                account_id=chain.account_id,
+                playbook="reply_comment@1.0",
+                params={
+                    "text": reply_text,
+                    "note_ref": note_ref,
+                    "chain_id": chain.chain_id,
+                    "target_comment_task_id": source_task_id,
+                },
+                task_id=task_id,
+                operation_id=operation_id,
+                source="scheduler",
+            )
+        except TaskDispatchAmbiguousError:
+            return self._mark_reconciliation_required(chain.chain_id)
+        if reply.status == "reconcile_required":
+            return self._mark_reconciliation_required(chain.chain_id)
+        if reply.status in {"failed", "cancelled", "unknown"}:
+            return self._stop_chain(chain.chain_id, reason="REPLY_TASK_FAILED")
+        if reply.status == "succeeded":
+            self.on_task_event(
+                reply,
+                status=reply.status,
+                error_code=reply.error_code,
+            )
+        return self.get(chain.chain_id)
+
+    def _associate_post_comment(self, chain_id: str, task: TaskRecord) -> None:
         with psycopg.connect(self.database_url) as connection:
-            connection.execute(
+            linked = connection.execute(
+                """
+                UPDATE engagement_chains
+                SET status = 'running',
+                    engager_account_id = %s,
+                    post_comment_task_ids = %s,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE chain_id = %s
+                  AND status IN ('pending', 'running')
+                RETURNING chain_id
+                """,
+                (task.account_id, Jsonb([task.task_id]), chain_id),
+            ).fetchone()
+        if linked is None:
+            raise EngagementChainNotFoundError(chain_id)
+
+    def _associate_reply_comment(self, chain_id: str, reply: TaskRecord) -> None:
+        with psycopg.connect(self.database_url) as connection:
+            linked = connection.execute(
                 """
                 UPDATE engagement_chains
                 SET status = 'awaiting_reply',
                     reply_comment_task_ids = %s,
                     updated_at = CURRENT_TIMESTAMP
                 WHERE chain_id = %s
+                  AND status IN ('running', 'awaiting_reply')
+                RETURNING chain_id
                 """,
-                (Jsonb([reply.task_id]), chain.chain_id),
-            )
+                (Jsonb([reply.task_id]), chain_id),
+            ).fetchone()
+        if linked is None:
+            raise EngagementChainNotFoundError(chain_id)
 
     def _find_chain_for_task(self, task_id: str) -> EngagementChainRecord | None:
         with psycopg.connect(self.database_url) as connection:
@@ -424,6 +590,39 @@ class EngagementService:
             message=f"Engagement chain stopped: {reason}",
             ref_id=chain_id,
         )
+        return _chain_from_row(row)
+
+    def _mark_reconciliation_required(
+        self,
+        chain_id: str,
+    ) -> EngagementChainRecord:
+        kind = "engagement_reconciliation_required"
+        message = "Engagement chain requires reconciliation: EFFECT_UNKNOWN"
+        alert_id = str(
+            uuid5(
+                NAMESPACE_URL,
+                f"loanagent:engagement-alert:{kind}:{chain_id}",
+            )
+        )
+        with psycopg.connect(self.database_url) as connection:
+            row = connection.execute(
+                f"""
+                UPDATE engagement_chains
+                SET status = 'failed',
+                    stop_reason = 'EFFECT_UNKNOWN',
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE chain_id = %s
+                RETURNING {_CHAIN_SELECT}
+                """,
+                (chain_id,),
+            ).fetchone()
+            self._insert_alert_on_connection(
+                connection,
+                alert_id=alert_id,
+                kind=kind,
+                message=message,
+                ref_id=chain_id,
+            )
         return _chain_from_row(row)
 
     def _update_status(self, chain_id: str, *, status: str) -> EngagementChainRecord:
@@ -471,14 +670,13 @@ class EngagementService:
     def _insert_alert(self, *, kind: str, message: str, ref_id: str | None) -> AlertRecord:
         alert_id = str(uuid4())
         with psycopg.connect(self.database_url) as connection:
-            row = connection.execute(
-                """
-                INSERT INTO alerts (alert_id, kind, message, ref_id)
-                VALUES (%s, %s, %s, %s)
-                RETURNING alert_id, kind, message, ref_id, created_at
-                """,
-                (alert_id, kind, message, ref_id),
-            ).fetchone()
+            row = self._insert_alert_on_connection(
+                connection,
+                alert_id=alert_id,
+                kind=kind,
+                message=message,
+                ref_id=ref_id,
+            )
         return AlertRecord(
             alert_id=row[0],
             kind=row[1],
@@ -486,6 +684,42 @@ class EngagementService:
             ref_id=row[3],
             created_at=row[4],
         )
+
+    def _insert_alert_on_connection(
+        self,
+        connection: psycopg.Connection,
+        *,
+        alert_id: str,
+        kind: str,
+        message: str,
+        ref_id: str | None,
+    ) -> tuple:
+        return connection.execute(
+            """
+            INSERT INTO alerts (alert_id, kind, message, ref_id)
+            VALUES (%s, %s, %s, %s)
+            ON CONFLICT (alert_id) DO UPDATE
+            SET kind = EXCLUDED.kind,
+                message = EXCLUDED.message,
+                ref_id = EXCLUDED.ref_id
+            RETURNING alert_id, kind, message, ref_id, created_at
+            """,
+            (alert_id, kind, message, ref_id),
+        ).fetchone()
+
+
+def _engagement_task_identity(
+    chain_id: str,
+    *,
+    step: str,
+    source_task_id: str,
+    account_id: str,
+) -> tuple[str, str]:
+    identity = f"loanagent:engagement:{chain_id}:{step}:{source_task_id}:{account_id}"
+    return (
+        str(uuid5(NAMESPACE_URL, f"{identity}:task")),
+        str(uuid5(NAMESPACE_URL, f"{identity}:operation")),
+    )
 
 
 def _chain_from_row(row: tuple) -> EngagementChainRecord:

@@ -211,7 +211,7 @@ object SurfaceNavigator {
         // Profile grids often keep the target cover below the fold (or overlapping the
         // bottom tab bar). Never tap matches that sit in the chrome zone — scroll first.
         var openedNote = false
-        for (attempt in 0 until 6) {
+        for (attempt in 0 until 12) {
             openedNote = openNoteByHints(runtime, title, alt, locator)
             if (openedNote) break
             swipeUp(runtime)

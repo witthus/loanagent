@@ -8,6 +8,8 @@ import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
 import org.robolectric.annotation.Config
+import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [35])
@@ -49,6 +51,35 @@ class MediaBridgeTest {
     }
 
     @Test
+    fun interruptedMediaPreparationStopsBeforeNetworkOrMediaStoreSideEffects() {
+        val context = RuntimeEnvironment.getApplication()
+        val connections = AtomicInteger()
+        val result = AtomicReference<Map<String, Any?>?>()
+        val worker = Thread {
+            Thread.currentThread().interrupt()
+            result.set(
+                MediaBridge.preparePublishParams(
+                    context,
+                    mapOf(
+                        "title" to "T",
+                        "body" to "B",
+                        "media_urls" to listOf(mapOf("url" to "https://example.test/image.jpg")),
+                    ),
+                ) {
+                    connections.incrementAndGet()
+                    throw AssertionError("network must not start after cancellation")
+                },
+            )
+        }
+
+        worker.start()
+        worker.join()
+
+        assertEquals(null, result.get())
+        assertEquals(0, connections.get())
+    }
+
+    @Test
     fun dispatcherFailsMediaMissingWithoutRunningEngine() {
         val engine = PlaybookEngine(
             runtime = PlaybookEngineTest.FakePlaybookRuntime(
@@ -74,7 +105,10 @@ class MediaBridgeTest {
         assertEquals("failed", result!!.status)
         assertEquals("MEDIA_MISSING", result.errorCode)
         assertFalse(result.success)
-        assertEquals(listOf("tm1:failed:MEDIA_MISSING"), reports)
+        assertEquals(
+            listOf("tm1:executing:null", "tm1:failed:MEDIA_MISSING"),
+            reports,
+        )
     }
 
     @Test

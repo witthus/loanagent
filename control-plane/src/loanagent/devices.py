@@ -180,8 +180,12 @@ class DeviceRepository:
             ).fetchone()
         return _device_from_row(row)
 
-    def mark_stale_offline(self, *, stale_after_sec: int = 90) -> int:
-        """Mark devices offline when heartbeat is older than stale_after_sec."""
+    def mark_stale_offline(self, *, stale_after_sec: int = 90) -> list[str]:
+        """Mark devices offline when heartbeat is older than stale_after_sec.
+
+        Returns the device_ids that transitioned to offline so callers can cancel
+        their open tasks.
+        """
         if stale_after_sec < 1:
             raise ValueError("stale_after_sec must be >= 1")
         with psycopg.connect(self.database_url) as connection:
@@ -199,7 +203,7 @@ class DeviceRepository:
                 """,
                 (stale_after_sec,),
             ).fetchall()
-        return len(rows)
+        return [str(row[0]) for row in rows]
 
     def update_geo_if_ip_matches(
         self,

@@ -390,7 +390,7 @@ def test_account_api_deletes_account_and_unbinds_device() -> None:
         assert deleted.json()["ok"] is True
 
         missing = client.get(
-            f"/api/v1/accounts",
+            "/api/v1/accounts",
             headers=ops_headers(),
         )
         assert missing.status_code == 200
@@ -429,7 +429,8 @@ def test_mark_stale_offline_clears_online_flag() -> None:
         connection.commit()
     changed = repository.mark_stale_offline(stale_after_sec=90)
     device = repository.get(device_id)
-    assert changed >= 1
+    assert len(changed) >= 1
+    assert device_id in changed
     assert device.online is False
 
 

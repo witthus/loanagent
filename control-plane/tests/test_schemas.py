@@ -49,6 +49,35 @@ def valid_task() -> dict:
     }
 
 
+def valid_task_record() -> dict:
+    return {
+        "schema_id": "task-record",
+        "schema_version": "1.0",
+        "task_id": "task-record-01",
+        "operation_id": "publish-record-01",
+        "device_id": "device-01",
+        "account_id": "account-01",
+        "playbook": "publish_note@1.0",
+        "params": {},
+        "effect_class": "non_idempotent",
+        "effect_committed": False,
+        "status": "failed",
+        "reconcile_required": False,
+        "priority": 10,
+        "timeout_sec": 300,
+        "source": "scheduler",
+        "error_code": "NAV_MISSING_HINT",
+        "created_at": "2026-07-15T00:00:00Z",
+        "updated_at": "2026-07-15T00:01:00Z",
+        "accepted_at": "2026-07-15T00:00:10Z",
+        "executing_at": "2026-07-15T00:00:20Z",
+        "effect_committed_at": None,
+        "reported_at": "2026-07-15T00:01:00Z",
+        "terminal_at": "2026-07-15T00:01:00Z",
+        "timeout_phase": None,
+    }
+
+
 EVENT_PAYLOADS = {
     "assign_task": {
         "task_id": "task-01",
@@ -126,6 +155,7 @@ def valid_update_manifest() -> dict:
     "name",
     [
         "task.schema.json",
+        "task-record.schema.json",
         "event.schema.json",
         "selector-bundle.schema.json",
         "update-manifest.schema.json",
@@ -144,6 +174,67 @@ def test_task_contract_models_effect_and_reconciliation_state() -> None:
     task["reconcile_required"] = False
     with pytest.raises(ValidationError):
         validator.validate(task)
+
+
+@pytest.mark.parametrize(
+    "persisted_field",
+    [
+        {"account_id": "account-01"},
+        {"created_at": "2026-07-15T00:00:00Z"},
+        {"updated_at": "2026-07-15T00:01:00Z"},
+        {"accepted_at": "2026-07-15T00:00:10Z"},
+    ],
+)
+def test_task_command_rejects_persisted_record_impersonation(
+    persisted_field: dict,
+) -> None:
+    task = valid_task()
+    task.update(persisted_field)
+
+    with pytest.raises(ValidationError):
+        validator_for("task.schema.json").validate(task)
+
+
+def test_persisted_task_record_is_only_accepted_by_record_contract() -> None:
+    record = valid_task_record()
+
+    validator_for("task-record.schema.json").validate(record)
+    with pytest.raises(ValidationError):
+        validator_for("task.schema.json").validate(record)
+
+
+def test_task_record_accepts_null_device_for_retained_history() -> None:
+    record = valid_task_record()
+    record["device_id"] = None
+
+    validator_for("task-record.schema.json").validate(record)
+
+
+@pytest.mark.parametrize(
+    "error_code",
+    [
+        "OPERATOR_CANCELLED",
+        "DEVICE_OFFLINE_CANCELLED",
+        "NAV_MISSING_HINT",
+        "TIMEOUT",
+        "EFFECT_UNKNOWN",
+        "FINAL_ACTION_BLOCKED",
+    ],
+)
+def test_task_record_accepts_stable_extensible_error_codes(error_code: str) -> None:
+    record = valid_task_record()
+    record["error_code"] = error_code
+
+    validator_for("task-record.schema.json").validate(record)
+
+
+@pytest.mark.parametrize("error_code", ["nav_missing_hint", "NAV-MISSING", "NAV MISSING", "_NAV"])
+def test_task_record_rejects_unstable_error_code_format(error_code: str) -> None:
+    record = valid_task_record()
+    record["error_code"] = error_code
+
+    with pytest.raises(ValidationError):
+        validator_for("task-record.schema.json").validate(record)
 
 
 def test_task_rejects_effect_committed_state_without_checkpoint() -> None:
@@ -167,22 +258,18 @@ def test_task_rejects_invalid_schedule_format() -> None:
         validator_for("task.schema.json").validate(task)
 
 
-def test_task_contract_exposes_stable_error_codes() -> None:
-    schema = load_schema("task.schema.json")
-    error_codes = set(schema["$defs"]["errorCode"]["enum"])
+def test_task_record_contract_documents_extensible_error_code_format() -> None:
+    schema = load_schema("task-record.schema.json")
+    error_code = schema["$defs"]["errorCode"]
+
+    assert error_code["pattern"] == "^[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)*$"
     assert {
-        "DEVICE_OFFLINE",
-        "DEVICE_LOCKED",
-        "SCREEN_NOT_READY",
-        "LAUNCH_BLOCKED",
-        "UI_NOT_FOUND",
-        "APP_CRASH",
-        "BUSINESS_BLOCKED",
+        "OPERATOR_CANCELLED",
+        "DEVICE_OFFLINE_CANCELLED",
+        "NAV_MISSING_HINT",
         "TIMEOUT",
-        "PRECONDITION",
-        "A11Y_DISABLED",
         "EFFECT_UNKNOWN",
-    } <= error_codes
+    } <= set(error_code["examples"])
 
 
 @pytest.mark.parametrize(

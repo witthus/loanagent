@@ -8,7 +8,6 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Looper
 import android.os.PowerManager
-import android.os.SystemClock
 import android.util.Log
 import android.view.WindowManager
 import java.util.concurrent.CountDownLatch
@@ -91,10 +90,15 @@ class ScreenWakeActivity : Activity() {
 
     companion object {
         private const val TAG = "ScreenWakeActivity"
+        private const val READY_SLICE_MS = 100L
         private val pendingLatch = AtomicReference<CountDownLatch?>(null)
         private val pendingResult = AtomicReference<ScreenWakeResult?>(null)
 
-        fun request(starter: Context, timeoutMs: Long): ScreenWakeResult {
+        fun request(
+            starter: Context,
+            timeoutMs: Long,
+            checkCancelled: () -> Unit = {},
+        ): ScreenWakeResult {
             // Must run off the main thread: we block on the dismiss callback latch, while
             // Activity.onCreate / requestDismissKeyguard need the main looper.
             check(Looper.myLooper() != Looper.getMainLooper()) {
@@ -126,12 +130,16 @@ class ScreenWakeActivity : Activity() {
                     started.countDown()
                 }
             }
-            started.await(3, TimeUnit.SECONDS)
+            awaitCooperatively(started, 3_000L, checkCancelled)
             if (!startOk.get()) {
                 pendingLatch.compareAndSet(latch, null)
                 return pendingResult.get() ?: ScreenWakeResult.StartFailed
             }
-            val finished = latch.await(timeoutMs.coerceAtLeast(1_000L), TimeUnit.MILLISECONDS)
+            val finished = awaitCooperatively(
+                latch,
+                timeoutMs.coerceAtLeast(1_000L),
+                checkCancelled,
+            )
             return if (!finished) {
                 pendingLatch.compareAndSet(latch, null)
                 ScreenWakeResult.Timeout
@@ -148,16 +156,41 @@ class ScreenWakeActivity : Activity() {
         fun waitUntilReady(
             context: Context,
             timeoutMs: Long,
+            clock: MonotonicClock = SystemMonotonicClock,
+            sleeper: PollSleeper = ThreadPollSleeper,
+            checkCancelled: () -> Unit = {},
         ): Boolean {
             val power = context.getSystemService(PowerManager::class.java) ?: return false
             val keyguard = context.getSystemService(KeyguardManager::class.java) ?: return false
-            val deadline = SystemClock.elapsedRealtime() + timeoutMs
-            while (SystemClock.elapsedRealtime() < deadline) {
+            val deadline = saturatingAdd(clock.nowMillis(), timeoutMs.coerceAtLeast(0))
+            while (clock.nowMillis() < deadline) {
+                checkCancelled()
                 if (power.isInteractive && !keyguard.isKeyguardLocked) return true
-                SystemClock.sleep(200)
+                val remaining = (deadline - clock.nowMillis()).coerceAtLeast(0)
+                if (remaining == 0L) break
+                sleeper.sleep(minOf(READY_SLICE_MS, remaining))
             }
+            checkCancelled()
             return power.isInteractive && !keyguard.isKeyguardLocked
         }
+
+        private fun awaitCooperatively(
+            latch: CountDownLatch,
+            timeoutMs: Long,
+            checkCancelled: () -> Unit,
+        ): Boolean {
+            val deadline = saturatingAdd(SystemMonotonicClock.nowMillis(), timeoutMs.coerceAtLeast(0))
+            while (latch.count > 0 && SystemMonotonicClock.nowMillis() < deadline) {
+                checkCancelled()
+                val remaining = (deadline - SystemMonotonicClock.nowMillis()).coerceAtLeast(1)
+                if (latch.await(minOf(remaining, READY_SLICE_MS), TimeUnit.MILLISECONDS)) return true
+            }
+            checkCancelled()
+            return latch.count == 0L
+        }
+
+        private fun saturatingAdd(left: Long, right: Long): Long =
+            if (left > Long.MAX_VALUE - right) Long.MAX_VALUE else left + right
 
         @Suppress("DEPRECATION")
         private fun acquireBriefWakeLock(context: Context) {

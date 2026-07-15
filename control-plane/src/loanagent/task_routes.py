@@ -1,23 +1,30 @@
 from __future__ import annotations
 
-from dataclasses import asdict
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from loanagent.auth import require_device, require_device_or_ops, require_ops
 from loanagent.tasks import (
     DuplicateTaskError,
+    InvalidTaskResultPayloadError,
     PlaybookForbiddenError,
     TaskAccessibilityDownError,
     TaskAccountNotFoundError,
     TaskAccountUnavailableError,
     TaskAlreadyTerminalError,
+    TaskDispatchAmbiguousError,
     TaskDispatchError,
     TaskDeviceUnavailableError,
+    TaskNetworkPolicyViolationError,
     TaskNotFoundError,
+    TaskPublishQuotaExceededError,
     TaskService,
+    TaskTransitionError,
+    serialize_task_record,
+    task_dispatch_ambiguous_detail,
+    validate_task_error_code,
 )
 
 
@@ -38,9 +45,22 @@ class DeviceTaskEventPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     task_id: str = Field(min_length=1, max_length=128)
-    status: Literal["succeeded", "failed"]
-    error_code: str | None = Field(default=None, min_length=1, max_length=64)
+    status: Literal[
+        "accepted",
+        "executing",
+        "effect_committed",
+        "reported",
+        "succeeded",
+        "failed",
+        "unknown",
+    ]
+    error_code: str | None = None
     result_payload: dict | None = None
+
+    @field_validator("error_code")
+    @classmethod
+    def validate_error_code(cls, value: str | None) -> str | None:
+        return validate_task_error_code(value)
 
 
 @router.post("/tasks", dependencies=[Depends(require_ops)])
@@ -78,11 +98,28 @@ def create_task(payload: TaskCreatePayload, request: Request) -> dict:
             "A11Y_DOWN",
             "Device accessibility service is not bound.",
         ) from error
+    except TaskNetworkPolicyViolationError as error:
+        raise _task_http_error(
+            409,
+            "NETWORK_POLICY_VIOLATION",
+            "Device is on Wi-Fi while the account requires cellular_only.",
+        ) from error
+    except TaskPublishQuotaExceededError as error:
+        raise _task_http_error(
+            429,
+            "PUBLISH_QUOTA_EXCEEDED",
+            "Account has reached its daily publish quota.",
+        ) from error
     except TaskAccountNotFoundError as error:
         raise _task_http_error(
             404,
             "ACCOUNT_NOT_FOUND",
             "Account does not exist.",
+        ) from error
+    except TaskDispatchAmbiguousError as error:
+        raise HTTPException(
+            status_code=409,
+            detail=task_dispatch_ambiguous_detail(error),
         ) from error
     except TaskDispatchError as error:
         raise _task_http_error(
@@ -90,7 +127,7 @@ def create_task(payload: TaskCreatePayload, request: Request) -> dict:
             "TASK_DISPATCH_FAILED",
             "Task dispatch failed after persistence; retry with a new task_id.",
         ) from error
-    return asdict(task)
+    return serialize_task_record(task)
 
 
 @router.get("/tasks", dependencies=[Depends(require_ops)])
@@ -101,7 +138,7 @@ def list_tasks(
     status: str | None = Query(default=None, min_length=1, max_length=32),
 ) -> list[dict]:
     return [
-        asdict(task)
+        serialize_task_record(task)
         for task in _task_service(request).list(
             account_id=account_id,
             device_id=device_id,
@@ -120,7 +157,7 @@ def get_task(task_id: str, request: Request) -> dict:
             "TASK_NOT_FOUND",
             "Task does not exist.",
         ) from error
-    return asdict(task)
+    return serialize_task_record(task)
 
 
 @router.post("/tasks/{task_id}/cancel", dependencies=[Depends(require_ops)])
@@ -139,7 +176,7 @@ def cancel_task(task_id: str, request: Request) -> dict:
             "TASK_ALREADY_TERMINAL",
             "Task is already finished and cannot be cancelled.",
         ) from error
-    return asdict(task)
+    return serialize_task_record(task)
 
 
 @router.get("/devices/{device_id}/commands", dependencies=[Depends(require_device)])
@@ -166,7 +203,25 @@ def accept_device_event(device_id: str, payload: DeviceTaskEventPayload, request
             "TASK_NOT_FOUND",
             "Task does not exist for this device.",
         ) from error
-    return asdict(task)
+    except TaskAlreadyTerminalError as error:
+        raise _task_http_error(
+            409,
+            "TASK_ALREADY_TERMINAL",
+            "Task already has a terminal result.",
+        ) from error
+    except TaskTransitionError as error:
+        raise _task_http_error(
+            409,
+            "TASK_INVALID_TRANSITION",
+            "Task event is not valid for the current state.",
+        ) from error
+    except InvalidTaskResultPayloadError as error:
+        raise _task_http_error(
+            422,
+            "TASK_RESULT_PAYLOAD_INVALID",
+            str(error),
+        ) from error
+    return serialize_task_record(task)
 
 
 def _task_service(request: Request) -> TaskService:

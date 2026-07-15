@@ -9,7 +9,7 @@ import psycopg
 from psycopg.types.json import Jsonb
 
 from loanagent.db import migrate_fleet_schema
-from loanagent.platforms import DEFAULT_PLATFORM, normalize_platform
+from loanagent.platforms import normalize_platform
 from loanagent.sensitivity import scan_text
 
 

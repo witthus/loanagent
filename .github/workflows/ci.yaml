@@ -70,3 +70,15 @@ jobs:
             ops/m0/generated/provenance.txt
           if-no-files-found: error
           retention-days: 14
+
+  ops-web:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Build ops-web image
+        run: docker compose -f infra/compose.yaml --profile web build ops-web
+      - name: Typecheck, test, and build ops-web
+        run: >-
+          docker compose -f infra/compose.yaml --profile web run --rm --no-deps ops-web
+          sh -lc 'npm ci && npm run typecheck && npm test && npm run build'

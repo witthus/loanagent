@@ -8,7 +8,9 @@ import android.os.Looper
 import android.os.SystemClock
 import android.util.Log
 import java.util.concurrent.CountDownLatch
+import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
+import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
@@ -16,8 +18,20 @@ import java.util.concurrent.atomic.AtomicReference
 
 class AccessibilityPlaybookRuntime(
     private val context: Context,
-) : PlaybookRuntime {
+    private val clock: MonotonicClock = SystemMonotonicClock,
+    private val sleeper: PollSleeper = ThreadPollSleeper,
+) : PlaybookRuntime, TaskExecutionContextBindable {
     private val extractor = ContentExtractors()
+    private val executionContext = AtomicReference<TaskExecutionContext?>()
+
+    override fun bindExecutionContext(context: TaskExecutionContext): RequestHandle {
+        check(executionContext.compareAndSet(null, context))
+        return RequestHandle { executionContext.compareAndSet(context, null) }
+    }
+
+    private fun checkExecution() {
+        executionContext.get()?.check()
+    }
 
     override fun accessibilityAlive(): Boolean = M0AccessibilityService.instance != null
 
@@ -37,16 +51,31 @@ class AccessibilityPlaybookRuntime(
             return ScreenReadyPolicy.ERROR_SECURE_OR_FAILED
         }
 
-        val wakeResult = runCatching {
-            ScreenWakeActivity.request(service, timeoutMs.coerceAtLeast(5_000L))
-        }.getOrElse {
-            Log.w(TAG, "ensureScreenReady wake failed", it)
+        checkExecution()
+        val wakeResult = try {
+            ScreenWakeActivity.request(
+                service,
+                timeoutMs.coerceAtLeast(5_000L),
+                ::checkExecution,
+            )
+        } catch (cancelled: TaskExecutionCancelledException) {
+            throw cancelled
+        } catch (error: Exception) {
+            Log.w(TAG, "ensureScreenReady wake failed", error)
             ScreenWakeResult.StartFailed
         }
 
         when (wakeResult) {
             ScreenWakeResult.Ok -> {
-                if (ScreenWakeActivity.waitUntilReady(service, 3_000L)) return null
+                if (
+                    ScreenWakeActivity.waitUntilReady(
+                        service,
+                        3_000L,
+                        checkCancelled = ::checkExecution,
+                    )
+                ) {
+                    return null
+                }
             }
             ScreenWakeResult.SecureKeyguard -> return ScreenReadyPolicy.ERROR_SECURE_OR_FAILED
             else -> Unit
@@ -55,7 +84,15 @@ class AccessibilityPlaybookRuntime(
         // Swipe-lock fallback: upward gesture on the lock screen.
         if (keyguard.isKeyguardLocked && !keyguard.isKeyguardSecure) {
             swipeUnlockFallback()
-            if (ScreenWakeActivity.waitUntilReady(service, 4_000L)) return null
+            if (
+                ScreenWakeActivity.waitUntilReady(
+                    service,
+                    4_000L,
+                    checkCancelled = ::checkExecution,
+                )
+            ) {
+                return null
+            }
         }
 
         return if (power.isInteractive && !keyguard.isKeyguardLocked) {
@@ -68,7 +105,7 @@ class AccessibilityPlaybookRuntime(
     private fun swipeUnlockFallback() {
         // Typical swipe-up unlock on ~1080x2400 panels; harmless if already unlocked.
         swipe(540, 2_000, 540, 700, durationMs = 450)
-        SystemClock.sleep(400)
+        sleep(400)
         swipe(540, 1_900, 540, 600, durationMs = 450)
     }
 
@@ -104,11 +141,13 @@ class AccessibilityPlaybookRuntime(
     }
 
     override fun waitForXhsForeground(timeoutMs: Long): Boolean {
-        val deadline = SystemClock.elapsedRealtime() + timeoutMs
-        while (SystemClock.elapsedRealtime() < deadline) {
+        val deadline = saturatingAdd(clock.nowMillis(), timeoutMs.coerceAtLeast(0))
+        while (clock.nowMillis() < deadline) {
+            checkExecution()
             if (isXhsForeground()) return true
-            SystemClock.sleep(350)
+            sleep(350)
         }
+        checkExecution()
         return isXhsForeground()
     }
 
@@ -136,7 +175,7 @@ class AccessibilityPlaybookRuntime(
             runner.run()
         } else {
             android.os.Handler(Looper.getMainLooper()).post(runner)
-            latch.await(3, TimeUnit.SECONDS)
+            awaitCooperatively(latch, 3_000)
         }
         return ok.get()
     }
@@ -144,6 +183,7 @@ class AccessibilityPlaybookRuntime(
     companion object {
         private const val TAG = "A11yPlaybookRuntime"
         private const val XHS_PACKAGE = "com.xingin.xhs"
+        private const val WAIT_SLICE_MS = 100L
     }
 
     override fun currentPageHint(): PageHint? = observe()?.pageHint
@@ -220,11 +260,12 @@ class AccessibilityPlaybookRuntime(
     override fun clickTextContaining(fragment: String, timeoutMs: Long): Boolean {
         val needle = fragment.trim()
         if (needle.length < 2) return false
-        val deadline = SystemClock.elapsedRealtime() + timeoutMs
-        while (SystemClock.elapsedRealtime() < deadline) {
+        val deadline = saturatingAdd(clock.nowMillis(), timeoutMs.coerceAtLeast(0))
+        while (clock.nowMillis() < deadline) {
+            checkExecution()
             val snapshot = observe()
             if (snapshot == null) {
-                SystemClock.sleep(300)
+                sleep(300)
                 continue
             }
             val match = snapshot.nodes.firstOrNull { node ->
@@ -234,7 +275,7 @@ class AccessibilityPlaybookRuntime(
                     (node.clickable || node.bounds != null)
             }
             if (match == null) {
-                SystemClock.sleep(300)
+                sleep(300)
                 continue
             }
             val bounds = match.bounds
@@ -255,7 +296,7 @@ class AccessibilityPlaybookRuntime(
                     return true
                 }
             }
-            SystemClock.sleep(300)
+            sleep(300)
         }
         return false
     }
@@ -294,7 +335,7 @@ class AccessibilityPlaybookRuntime(
             latch.countDown()
         }
         if (!accepted) return false
-        return latch.await(5, TimeUnit.SECONDS) && ok.get()
+        return awaitCooperatively(latch, 5_000) && ok.get()
     }
 
     override fun swipe(
@@ -316,7 +357,7 @@ class AccessibilityPlaybookRuntime(
             latch.countDown()
         }
         if (!accepted) return false
-        return latch.await(5, TimeUnit.SECONDS) && ok.get()
+        return awaitCooperatively(latch, 5_000) && ok.get()
     }
 
     override fun globalBack(): Boolean {
@@ -326,7 +367,14 @@ class AccessibilityPlaybookRuntime(
     }
 
     override fun sleep(ms: Long) {
-        SystemClock.sleep(ms.coerceAtLeast(0))
+        var remaining = ms.coerceAtLeast(0)
+        while (remaining > 0) {
+            checkExecution()
+            val slice = minOf(remaining, WAIT_SLICE_MS)
+            sleeper.sleep(slice)
+            remaining -= slice
+        }
+        checkExecution()
     }
 
     private fun awaitAction(
@@ -336,118 +384,208 @@ class AccessibilityPlaybookRuntime(
     ): Boolean {
         val latch = CountDownLatch(1)
         val result = AtomicReference<ActionResult?>(null)
-        service.executeAction(request) {
+        val handle = service.executeAction(request) {
             result.set(it)
             latch.countDown()
         }
-        val finished = latch.await(timeoutMs + 2_000, TimeUnit.MILLISECONDS)
-        return finished && result.get()?.status == ActionStatus.SUCCESS
+        return try {
+            val finished = awaitCooperatively(latch, saturatingAdd(timeoutMs, 2_000))
+            if (!finished) handle.cancel()
+            finished && result.get()?.status == ActionStatus.SUCCESS
+        } catch (cancelled: TaskExecutionCancelledException) {
+            handle.cancel()
+            throw cancelled
+        }
     }
+
+    private fun awaitCooperatively(latch: CountDownLatch, timeoutMs: Long): Boolean {
+        val deadline = saturatingAdd(clock.nowMillis(), timeoutMs.coerceAtLeast(0))
+        while (latch.count > 0 && clock.nowMillis() < deadline) {
+            checkExecution()
+            val remaining = (deadline - clock.nowMillis()).coerceAtLeast(1)
+            if (latch.await(minOf(remaining, WAIT_SLICE_MS), TimeUnit.MILLISECONDS)) return true
+        }
+        checkExecution()
+        return latch.count == 0L
+    }
+
+    private fun saturatingAdd(left: Long, right: Long): Long =
+        if (left > Long.MAX_VALUE - right) Long.MAX_VALUE else left + right
+
 }
 
 class CloudBridgeCoordinator(
     private val context: Context,
     private val heartbeatClient: HeartbeatClient = HeartbeatClient(),
-    private val eventReporter: TaskEventReporter = TaskEventReporter(),
+    private val eventReporter: TaskEventSink = TaskEventReporter(),
     private val commandPollClient: CommandPollClient = CommandPollClient(),
+    private val heartbeatScheduler: ScheduledExecutorService =
+        Executors.newSingleThreadScheduledExecutor { runnable ->
+            Thread(runnable, "cloud-heartbeat").apply { isDaemon = true }
+        },
+    private val pollScheduler: ScheduledExecutorService =
+        Executors.newSingleThreadScheduledExecutor { runnable ->
+            Thread(runnable, "cloud-poll").apply { isDaemon = true }
+        },
+    private val playbookExecutor: ExecutorService =
+        Executors.newSingleThreadExecutor { runnable ->
+            Thread(runnable, "playbook-engine").apply { isDaemon = true }
+        },
+    private val commandTimeoutExecutor: ScheduledExecutorService =
+        Executors.newSingleThreadScheduledExecutor { runnable ->
+            Thread(runnable, "playbook-timeout").apply { isDaemon = true }
+        },
+    private val isSupported: () -> Boolean = { SupportedDeviceGate.isSupported() },
+    private val shutdownWaitMs: Long = SHUTDOWN_WAIT_MS,
 ) {
     private val started = AtomicBoolean(false)
-    private val scheduler = Executors.newSingleThreadScheduledExecutor { runnable ->
-        Thread(runnable, "cloud-bridge").apply { isDaemon = true }
-    }
-    private val playbookExecutor = Executors.newSingleThreadExecutor { runnable ->
-        Thread(runnable, "playbook-engine").apply { isDaemon = true }
-    }
+    private val closed = AtomicBoolean(false)
     private var heartbeatFuture: ScheduledFuture<*>? = null
     private var pollFuture: ScheduledFuture<*>? = null
     private var mqtt: MqttCommandClient? = null
+    private var engine: PlaybookEngine? = null
 
     fun start() {
+        check(!closed.get()) { "CloudBridgeCoordinator is permanently stopped" }
         if (!started.compareAndSet(false, true)) return
-        if (!SupportedDeviceGate.isSupported()) {
+        if (!isSupported()) {
             Log.w(TAG, "refuse cloud bridge on unsupported device")
             started.set(false)
             return
         }
-        CloudBridgeConfig.init(context)
-        val runtime = AccessibilityPlaybookRuntime(context)
-        val engine = PlaybookEngine(
-            runtime = runtime,
-            registry = DefaultPlaybookRegistry.create(),
-            ledger = SharedPreferencesEffectLedger(context),
-        )
-        val dispatcher = TaskCommandDispatcher(
-            engine = engine,
-            reporter = eventReporter,
-            context = context,
-        )
-        heartbeatFuture = scheduler.scheduleAtFixedRate(
-            {
-                try {
-                    heartbeatClient.send(
-                        a11yBound = runtime.accessibilityAlive(),
-                        wifiConnected = networkWifi(context),
-                        cellularOk = networkCellular(context),
-                        manufacturer = android.os.Build.MANUFACTURER,
-                        model = android.os.Build.MODEL,
-                    )
-                } catch (error: Exception) {
-                    Log.w(TAG, "heartbeat failed", error)
-                }
-            },
-            0,
-            CloudBridgeConfig.HEARTBEAT_INTERVAL_MS,
-            TimeUnit.MILLISECONDS,
-        )
-        pollFuture = scheduler.scheduleAtFixedRate(
-            {
-                try {
-                    val payloads = commandPollClient.poll()
-                    for (payload in payloads) {
-                        playbookExecutor.execute {
-                            try {
-                                dispatcher.handleMqttPayload(payload)
-                            } catch (error: Exception) {
-                                Log.e(TAG, "dispatch failed", error)
+        try {
+            CloudBridgeConfig.init(context)
+            val runtime = AccessibilityPlaybookRuntime(context)
+            val engine = PlaybookEngine(
+                runtime = runtime,
+                registry = DefaultPlaybookRegistry.create(),
+                ledger = SharedPreferencesEffectLedger(context),
+            ).also { this.engine = it }
+            val dispatcher = TaskCommandDispatcher(
+                engine = engine,
+                reporter = eventReporter,
+                preparePublishParamsWithContext = { params, execution ->
+                    MediaBridge.preparePublishParams(context, params, execution)
+                },
+                timeoutScheduler = ExecutorCommandTimeoutScheduler(commandTimeoutExecutor),
+            )
+            dispatcher.recoverPending()
+            // Heartbeat and command poll must not share one thread: a stalled poll/HTTP
+            // call would otherwise starve heartbeats and flip the device offline.
+            heartbeatFuture = heartbeatScheduler.scheduleAtFixedRate(
+                {
+                    if (!started.get()) return@scheduleAtFixedRate
+                    try {
+                        heartbeatClient.send(
+                            a11yBound = runtime.accessibilityAlive(),
+                            wifiConnected = networkWifi(context),
+                            cellularOk = networkCellular(context),
+                            manufacturer = android.os.Build.MANUFACTURER,
+                            model = android.os.Build.MODEL,
+                        )
+                    } catch (error: Exception) {
+                        Log.w(TAG, "heartbeat failed", error)
+                    }
+                },
+                0,
+                CloudBridgeConfig.HEARTBEAT_INTERVAL_MS,
+                TimeUnit.MILLISECONDS,
+            )
+            pollFuture = pollScheduler.scheduleAtFixedRate(
+                {
+                    if (!started.get()) return@scheduleAtFixedRate
+                    try {
+                        val payloads = commandPollClient.poll()
+                        for (payload in payloads) {
+                            if (!started.get()) break
+                            val receivedAt = SystemClock.elapsedRealtime()
+                            playbookExecutor.execute {
+                                try {
+                                    dispatcher.handleMqttPayload(payload, receivedAt)
+                                } catch (error: Exception) {
+                                    Log.e(TAG, "dispatch failed", error)
+                                }
                             }
                         }
-                    }
-                } catch (error: Exception) {
-                    Log.w(TAG, "command poll failed", error)
-                }
-            },
-            2_000,
-            CloudBridgeConfig.COMMAND_POLL_INTERVAL_MS,
-            TimeUnit.MILLISECONDS,
-        )
-        mqtt = MqttCommandClient(
-            onCommand = { payload ->
-                playbookExecutor.execute {
-                    try {
-                        dispatcher.handleMqttPayload(payload)
                     } catch (error: Exception) {
-                        Log.e(TAG, "dispatch failed", error)
+                        Log.w(TAG, "command poll failed", error)
                     }
-                }
-            },
-        ).also { it.start() }
-        Log.i(TAG, "cloud bridge started for ${CloudBridgeConfig.DEVICE_ID}")
+                },
+                2_000,
+                CloudBridgeConfig.COMMAND_POLL_INTERVAL_MS,
+                TimeUnit.MILLISECONDS,
+            )
+            mqtt = MqttCommandClient(
+                onCommand = { payload ->
+                    if (!started.get()) return@MqttCommandClient
+                    val receivedAt = SystemClock.elapsedRealtime()
+                    playbookExecutor.execute {
+                        try {
+                            dispatcher.handleMqttPayload(payload, receivedAt)
+                        } catch (error: Exception) {
+                            Log.e(TAG, "dispatch failed", error)
+                        }
+                    }
+                },
+            ).also { it.start() }
+            Log.i(TAG, "cloud bridge started for ${CloudBridgeConfig.DEVICE_ID}")
+        } catch (error: Exception) {
+            Log.e(TAG, "cloud bridge start failed", error)
+            stop()
+            throw error
+        }
     }
 
-    fun stop() {
-        if (!started.compareAndSet(true, false)) return
+    fun stop(): Boolean {
+        closed.set(true)
+        started.set(false)
         heartbeatFuture?.cancel(true)
         heartbeatFuture = null
         pollFuture?.cancel(true)
         pollFuture = null
-        mqtt?.stop()
+        engine?.cancelActive()
+        heartbeatClient.cancelActive()
+        (eventReporter as? CloudNetworkClient)?.cancelActive()
+        commandPollClient.cancelActive()
+        val mqttStopped = mqtt?.stop() ?: true
         mqtt = null
+        engine = null
         playbookExecutor.shutdownNow()
-        Log.i(TAG, "cloud bridge stopped")
+        heartbeatScheduler.shutdownNow()
+        pollScheduler.shutdownNow()
+        commandTimeoutExecutor.shutdownNow()
+        val playbookStopped = awaitTermination(playbookExecutor, "playbook executor")
+        val heartbeatStopped = awaitTermination(heartbeatScheduler, "cloud heartbeat scheduler")
+        val pollStopped = awaitTermination(pollScheduler, "cloud poll scheduler")
+        val timeoutStopped = awaitTermination(commandTimeoutExecutor, "playbook timeout scheduler")
+        val clean = mqttStopped && playbookStopped && heartbeatStopped && pollStopped && timeoutStopped
+        if (clean) {
+            Log.i(TAG, "cloud bridge stopped")
+        } else {
+            Log.e(TAG, "cloud bridge entered permanently stopped state after incomplete shutdown")
+        }
+        return clean
     }
+
+    internal fun isPermanentlyStopped(): Boolean = closed.get()
+
+    private fun awaitTermination(executor: ExecutorService, label: String): Boolean =
+        try {
+            if (!executor.awaitTermination(shutdownWaitMs, TimeUnit.MILLISECONDS)) {
+                Log.w(TAG, "$label did not terminate within ${shutdownWaitMs}ms")
+                false
+            } else {
+                true
+            }
+        } catch (_: InterruptedException) {
+            Thread.currentThread().interrupt()
+            Log.w(TAG, "interrupted while stopping $label")
+            false
+        }
 
     companion object {
         private const val TAG = "CloudBridge"
+        private const val SHUTDOWN_WAIT_MS = 1_000L
 
         private fun networkWifi(context: Context): Boolean? {
             val cm = context.getSystemService(ConnectivityManager::class.java) ?: return null

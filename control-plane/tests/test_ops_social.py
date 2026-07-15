@@ -237,8 +237,7 @@ def test_sync_comments_creates_read_comments_task() -> None:
     assert tasks.status_code == 200
     assert any(t["playbook"] == "read_comments@1.0" for t in tasks.json())
     assert any(
-        topic == f"devices/{device_id}/commands"
-        and payload["playbook"] == "read_comments@1.0"
+        topic == f"devices/{device_id}/commands" and payload["playbook"] == "read_comments@1.0"
         for topic, payload in mqtt_bus.published
     )
 
@@ -286,10 +285,50 @@ def test_reply_comment_creates_reply_comment_task() -> None:
     assert body["params"]["title_summary"] == "demo"
     assert body["params"]["locator_hint"] == "index:2"
     assert any(
-        topic == f"devices/{device_id}/commands"
-        and payload["playbook"] == "reply_comment@1.0"
+        topic == f"devices/{device_id}/commands" and payload["playbook"] == "reply_comment@1.0"
         for topic, payload in mqtt_bus.published
     )
+
+
+def test_comment_route_returns_ambiguous_reconciliation_contract() -> None:
+    _device_id, account_id = create_bound_account()
+
+    class RecordThenFailBus(RecordingMqttBus):
+        def publish(self, topic: str, payload: dict) -> None:
+            super().publish(topic, payload)
+            raise RuntimeError("broker acknowledgement lost")
+
+    bus = RecordThenFailBus()
+    task_service = TaskService(DATABASE_URL, bus)
+    note = NotesService(DATABASE_URL, task_service)._insert_note(
+        note_id=unique_id("note"),
+        account_id=account_id,
+        xhs_hint="hint-1",
+        title_summary="demo",
+    )
+
+    with TestClient(app, raise_server_exceptions=False) as client:
+        wire_services(client, bus)
+        response = client.post(
+            f"/api/v1/notes/{note.note_id}/comments",
+            headers=ops_headers(),
+            json={"text": "谢谢关注"},
+        )
+        detail = response.json()["detail"]
+        persisted = client.get(
+            f"/api/v1/tasks/{detail['task_id']}",
+            headers=ops_headers(),
+        )
+
+    assert response.status_code == 409
+    assert detail["code"] == "TASK_DISPATCH_AMBIGUOUS"
+    assert detail["reconcile_required"] is True
+    assert detail["error_code"] == "EFFECT_UNKNOWN"
+    assert detail["retry_permitted"] is False
+    assert detail["action"] == "RECONCILE_ORIGINAL_TASK"
+    assert "new task_id" not in detail["message"]
+    assert persisted.status_code == 200
+    assert persisted.json()["status"] == "reconcile_required"
 
 
 def test_publish_event_creates_published_notes() -> None:
@@ -403,8 +442,7 @@ def test_sync_notes_dispatches_and_reconciles_deletes() -> None:
     assert kept["like_count"] == 5
     assert kept["collect_count"] == 2
     assert any(
-        topic == f"devices/{device_id}/commands"
-        and payload["playbook"] == "sync_notes@1.0"
+        topic == f"devices/{device_id}/commands" and payload["playbook"] == "sync_notes@1.0"
         for topic, payload in mqtt_bus.published
     )
 

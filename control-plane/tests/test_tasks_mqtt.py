@@ -191,7 +191,7 @@ def test_create_and_dispatch_persists_queued_then_marks_accepted_after_publish()
                 "status": "queued",
                 "reconcile_required": False,
                 "priority": 100,
-                "timeout_sec": 120,
+                "timeout_sec": 60,
                 "source": "manual",
             },
         )
@@ -237,7 +237,7 @@ def test_create_task_route_requires_ops_bearer() -> None:
     assert response.json()["detail"] == "unauthorized"
 
 
-def test_create_task_route_marks_task_failed_when_publish_fails() -> None:
+def test_create_task_route_returns_reconciliation_contract_for_ambiguous_publish() -> None:
     _, account_id = create_bound_account()
     task_id = unique_id("task")
     service = TaskService(DATABASE_URL, FailingMqttBus())
@@ -249,16 +249,28 @@ def test_create_task_route_marks_task_failed_when_publish_fails() -> None:
             headers=ops_headers(),
             json={
                 "account_id": account_id,
-                "playbook": "ensure_app_ready@1.0",
+                "playbook": "publish_note@1.0",
                 "params": {},
                 "task_id": task_id,
             },
         )
 
-    assert response.status_code == 502
-    assert response.json()["detail"]["code"] == "TASK_DISPATCH_FAILED"
+    assert response.status_code == 409
+    assert response.json()["detail"] == {
+        "code": "TASK_DISPATCH_AMBIGUOUS",
+        "message": (
+            "Dispatch outcome is unknown; blind retries are forbidden. "
+            "Reconcile the original task before any further action."
+        ),
+        "task_id": task_id,
+        "status": "reconcile_required",
+        "reconcile_required": True,
+        "error_code": "EFFECT_UNKNOWN",
+        "retry_permitted": False,
+        "action": "RECONCILE_ORIGINAL_TASK",
+    }
     tasks = service.list(account_id=account_id)
-    assert [(task.task_id, task.status) for task in tasks] == [(task_id, "failed")]
+    assert [(task.task_id, task.status) for task in tasks] == [(task_id, "reconcile_required")]
 
 
 def test_create_task_route_rejects_publish_note_for_engager() -> None:
@@ -278,6 +290,87 @@ def test_create_task_route_rejects_publish_note_for_engager() -> None:
 
     assert response.status_code == 403
     assert response.json()["detail"]["code"] == "PLAYBOOK_FORBIDDEN"
+
+
+def test_create_task_route_rejects_cellular_only_on_wifi() -> None:
+    device_id = unique_id("wifi-dev")
+    account_id = unique_id("wifi-acc")
+    devices = DeviceRepository(DATABASE_URL)
+    accounts = AccountRepository(DATABASE_URL)
+    devices.migrate()
+    devices.heartbeat(
+        device_id=device_id,
+        agent_version="0.3.0",
+        a11y_bound=True,
+        wifi_connected=True,
+        cellular_ok=True,
+    )
+    accounts.create(
+        account_id=account_id,
+        role=AccountRole.PUBLISHER_MAIN,
+        device_id=device_id,
+    )
+    accounts.update(account_id, network_policy="cellular_only")
+
+    with TestClient(app) as client:
+        client.app.state.task_service = TaskService(DATABASE_URL, RecordingMqttBus())
+        blocked = client.post(
+            "/api/v1/tasks",
+            headers=ops_headers(),
+            json={
+                "account_id": account_id,
+                "playbook": "publish_note@1.0",
+                "params": {"title": "t", "body": "b"},
+            },
+        )
+        allowed = client.post(
+            "/api/v1/tasks",
+            headers=ops_headers(),
+            json={
+                "account_id": account_id,
+                "playbook": "ensure_app_ready@1.0",
+                "params": {},
+            },
+        )
+
+    assert blocked.status_code == 409
+    assert blocked.json()["detail"]["code"] == "NETWORK_POLICY_VIOLATION"
+    assert allowed.status_code == 200
+
+
+def test_create_task_route_rejects_daily_publish_quota() -> None:
+    device_id, account_id = create_bound_account()
+    accounts = AccountRepository(DATABASE_URL)
+    accounts.update(account_id, daily_publish_quota=1)
+    mqtt_bus = RecordingMqttBus()
+    service = TaskService(DATABASE_URL, mqtt_bus)
+    first = service.create_and_dispatch(
+        account_id=account_id,
+        playbook="publish_note@1.0",
+        params={"title": "one", "body": "body"},
+        operation_id=unique_id("op"),
+        task_id=unique_id("task"),
+    )
+    service.mark_from_event(
+        device_id=device_id,
+        task_id=first.task_id,
+        status="succeeded",
+    )
+
+    with TestClient(app) as client:
+        client.app.state.task_service = service
+        rejected = client.post(
+            "/api/v1/tasks",
+            headers=ops_headers(),
+            json={
+                "account_id": account_id,
+                "playbook": "publish_note@1.0",
+                "params": {"title": "two", "body": "body"},
+            },
+        )
+
+    assert rejected.status_code == 429
+    assert rejected.json()["detail"]["code"] == "PUBLISH_QUOTA_EXCEEDED"
 
 
 def test_create_task_route_rejects_paused_account() -> None:
@@ -489,7 +582,7 @@ def test_device_http_command_poll_returns_accepted_envelopes() -> None:
     assert body[0]["playbook"] == "ensure_app_ready@1.0"
     assert body[0]["params"] == {"probe": True}
     assert body[0]["account_id"] == account_id
-    assert body[0]["status"] == "executing"
+    assert body[0]["status"] == "accepted"
 
     with TestClient(app) as client:
         client.app.state.task_service = TaskService(DATABASE_URL, RecordingMqttBus())
@@ -500,12 +593,21 @@ def test_device_http_command_poll_returns_accepted_envelopes() -> None:
         listed = client.get(
             "/api/v1/tasks",
             headers=ops_headers(),
+            params={"account_id": account_id, "status": "accepted"},
+        )
+        # Poll must not invent executing; device reports executing via events.
+        still_accepted = client.get(
+            "/api/v1/tasks",
+            headers=ops_headers(),
             params={"account_id": account_id, "status": "executing"},
         )
     assert second.status_code == 200
-    assert second.json() == []
+    assert len(second.json()) == 1
+    assert second.json()[0]["status"] == "accepted"
     assert listed.status_code == 200
     assert any(task["task_id"] == task_id for task in listed.json())
+    assert still_accepted.status_code == 200
+    assert all(task["task_id"] != task_id for task in still_accepted.json())
 
 
 def test_create_task_rejects_when_a11y_unbound() -> None:

@@ -77,6 +77,7 @@ class PublishNotePlaybook : Playbook {
             return PlaybookResult.failed(taskId, "SET_TEXT_FAILED")
         }
         runtime.sleep(500)
+        runtime.beginSideEffect()
         if (!runtime.click("text=发布笔记", allowFinal = true, timeoutMs = 15_000)) {
             return PlaybookResult.failed(taskId, "FINAL_ACTION_BLOCKED")
         }
@@ -326,6 +327,17 @@ class ReplyCommentPlaybook : Playbook {
             hint = runtime.currentPageHint()
         }
 
+        // Nested reply: focus the target comment (locator center) then open its 回复 composer.
+        val locatorHint = command.stringParam("locator_hint")
+        val center = parseCenter(locatorHint)
+        if (center != null) {
+            runtime.tap(center.first, center.second)
+            runtime.sleep(600)
+            runtime.click("text=回复", allowFinal = false, timeoutMs = 2_000) ||
+                runtime.clickTextContaining("回复", timeoutMs = 2_000)
+            runtime.sleep(700)
+        }
+
         val selectors = buildList {
             command.stringParam("input_selector")?.let(::add)
             add("text=留下你的想法吧")
@@ -337,13 +349,35 @@ class ReplyCommentPlaybook : Playbook {
             command.stringParam("alt_input_selector")?.let(::add)
         }
 
+        fun hasSendControl(): Boolean {
+            val snapshot = runtime.observe() ?: return false
+            return snapshot.nodes.any { node ->
+                val labels = listOf(node.text, node.contentDescription).mapNotNull { it?.trim() }
+                labels.any { it == "发送" || it.startsWith("发送") }
+            }
+        }
+
         fun tryType(): Boolean {
-            if (selectors.any { runtime.setText(it, text, timeoutMs = 4_000) }) return true
-            // After focus, placeholders often clear — match EditText by class.
-            if (runtime.setText("className=android.widget.EditText", text, timeoutMs = 6_000)) {
+            if (selectors.any { runtime.setText(it, text, timeoutMs = 4_000) } &&
+                (fieldLooksFilled(runtime, text) || hasSendControl())
+            ) {
                 return true
             }
-            return runtime.setText("className=android.widget.EditText;clickable=true", text, timeoutMs = 4_000)
+            if (fillFocusedEditable(runtime, text, selectors.map { it.removePrefix("text=") })) {
+                return true
+            }
+            // Loanagent IME InputConnection: a11y often lags (placeholder still visible,
+            // 发送 not yet in the tree). Treat IC success as typed and let send retries
+            // confirm the composer is live.
+            if (M0InputMethodService.commitIntoFocusedEditor(text)) {
+                runtime.sleep(600)
+                return true
+            }
+            if (commitViaLoanagentIme(runtime, text)) {
+                runtime.sleep(400)
+                return fieldLooksFilled(runtime, text) || hasSendControl()
+            }
+            return false
         }
 
         fun openComposer(): Boolean {
@@ -362,6 +396,10 @@ class ReplyCommentPlaybook : Playbook {
                     return true
                 }
             }
+            if (runtime.tap(997, 2279) || runtime.tap(540, 2280)) {
+                runtime.sleep(900)
+                return true
+            }
             val tapX = command.intParam("composer_tap_x", 350)
             val tapY = command.intParam("composer_tap_y", 1900)
             if (runtime.tap(tapX, tapY)) {
@@ -371,30 +409,120 @@ class ReplyCommentPlaybook : Playbook {
             return false
         }
 
-        if (!tryType()) {
+        fun ensureComposerTyped(): Boolean {
             openComposer()
-            if (!tryType()) {
-                // Note-detail bottom bar sits around y≈1900 on Note 12 Turbo.
-                runtime.tap(350, 1906)
-                runtime.sleep(1_000)
-                openComposer()
-                if (!tryType()) {
-                    return if (knownCommentSurface || hint == PageHint.COMMENTS || hint == PageHint.UNKNOWN ||
-                        hint == PageHint.NOTE_DETAIL
-                    ) {
-                        PlaybookResult.failed(taskId, "SET_TEXT_FAILED")
-                    } else {
-                        PlaybookResult.failed(taskId, "WRONG_PAGE")
-                    }
-                }
+            if (tryType()) return true
+            runtime.tap(350, 1906)
+            runtime.sleep(800)
+            openComposer()
+            return tryType()
+        }
+
+        fun trySend(): Boolean {
+            if (runtime.click("text=发送", allowFinal = true, timeoutMs = 5_000)) return true
+            if (runtime.click("contentDescription=发送", allowFinal = true, timeoutMs = 2_000)) {
+                return true
+            }
+            return false
+        }
+
+        if (!ensureComposerTyped()) {
+            return if (knownCommentSurface || hint == PageHint.COMMENTS || hint == PageHint.UNKNOWN ||
+                hint == PageHint.NOTE_DETAIL
+            ) {
+                PlaybookResult.failed(taskId, "SET_TEXT_FAILED")
+            } else {
+                PlaybookResult.failed(taskId, "WRONG_PAGE")
             }
         }
         runtime.sleep(400)
-        if (!runtime.click("text=发送", allowFinal = true, timeoutMs = 10_000)) {
-            return PlaybookResult.failed(taskId, "FINAL_ACTION_BLOCKED")
+        runtime.beginSideEffect()
+        if (!trySend()) {
+            // Composer may have collapsed; reopen, retype, retry send once.
+            openComposer()
+            M0InputMethodService.commitIntoFocusedEditor(text)
+            runtime.sleep(500)
+            if (!trySend()) {
+                return PlaybookResult.failed(taskId, "FINAL_ACTION_BLOCKED")
+            }
         }
         runtime.sleep(1_000)
         return PlaybookResult.succeeded(taskId, effectCommitted = true)
+    }
+
+    private fun parseCenter(locatorHint: String?): Pair<Int, Int>? {
+        if (locatorHint.isNullOrBlank()) return null
+        val match = Regex("""center\s*=\s*(\d+)\s*,\s*(\d+)""").find(locatorHint) ?: return null
+        return match.groupValues[1].toInt() to match.groupValues[2].toInt()
+    }
+
+    private fun fieldLooksFilled(runtime: PlaybookRuntime, expected: String): Boolean {
+        val needle = expected.trim().take(12)
+        if (needle.isEmpty()) return true
+        val snapshot = runtime.observe() ?: return false
+        return snapshot.nodes.any { node ->
+            val value = node.text?.trim().orEmpty()
+            value.contains(needle) || value == expected.trim()
+        }
+    }
+
+    private fun fillFocusedEditable(
+        runtime: PlaybookRuntime,
+        text: String,
+        hints: List<String>,
+    ): Boolean {
+        val snapshot = runtime.observe() ?: return false
+        val editables = snapshot.nodes
+            .filter { it.editable && it.bounds?.isUsable == true }
+            .sortedWith(compareBy({ it.bounds!!.top }, { it.bounds!!.left }))
+        val target = editables.lastOrNull { node ->
+            val label = node.text?.trim().orEmpty()
+            label.isEmpty() || hints.any { hint -> label.contains(hint) || hint.contains(label) }
+        } ?: editables.lastOrNull() ?: return false
+        val bounds = target.bounds ?: return false
+        runtime.tap(bounds.centerX, bounds.centerY)
+        runtime.sleep(500)
+        val label = target.text?.trim().orEmpty()
+        if (label.isNotEmpty() &&
+            runtime.setText("text=$label", text, timeoutMs = 6_000) &&
+            fieldLooksFilled(runtime, text)
+        ) {
+            return true
+        }
+        if (
+            runtime.setText("className=android.widget.EditText", text, timeoutMs = 6_000) &&
+            fieldLooksFilled(runtime, text)
+        ) {
+            return true
+        }
+        return false
+    }
+
+    private fun commitViaLoanagentIme(runtime: PlaybookRuntime, text: String): Boolean {
+        val snapshot = runtime.observe() ?: return false
+        val imeSurface = snapshot.nodes.any { node ->
+            val label = listOf(node.text, node.contentDescription).mapNotNull { it?.trim() }
+            label.any { it.contains("M0 手动输入") || it == "Commit text" || it == "COMMIT TEXT" }
+        }
+        if (!imeSurface) return false
+        // Fill the IME's own EditText then press Commit.
+        if (!runtime.setText("className=android.widget.EditText", text, timeoutMs = 4_000) &&
+            !runtime.setText("text=M0 手动输入（不保存）", text, timeoutMs = 3_000)
+        ) {
+            // Tap the IME edit area roughly and retry class selector.
+            runtime.tap(540, 2050)
+            runtime.sleep(400)
+            if (!runtime.setText("className=android.widget.EditText", text, timeoutMs = 4_000)) {
+                return false
+            }
+        }
+        runtime.sleep(300)
+        val committed =
+            runtime.click("text=Commit text", allowFinal = false, timeoutMs = 3_000) ||
+                runtime.click("text=COMMIT TEXT", allowFinal = false, timeoutMs = 2_000)
+        if (!committed) return false
+        runtime.sleep(500)
+        return fieldLooksFilled(runtime, text)
     }
 }
 
@@ -444,6 +572,7 @@ class ReplyDmPlaybook : Playbook {
             }
         }
         runtime.sleep(400)
+        runtime.beginSideEffect()
         if (!runtime.click("text=发送", allowFinal = true, timeoutMs = 10_000)) {
             return PlaybookResult.failed(taskId, "FINAL_ACTION_BLOCKED")
         }

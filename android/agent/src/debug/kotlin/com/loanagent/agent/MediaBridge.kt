@@ -27,6 +27,7 @@ object MediaBridge {
     fun preparePublishParams(
         context: Context,
         params: Map<String, Any?>,
+        execution: TaskExecutionContext? = null,
         openConnection: (String) -> HttpURLConnection = { url ->
             (URL(url).openConnection() as HttpURLConnection)
         },
@@ -37,21 +38,25 @@ object MediaBridge {
 
         return try {
             for ((index, entry) in entries.withIndex()) {
+                checkExecution(execution)
                 val url = entry.url
                 if (url.isBlank()) return null
                 val filename = entry.filename?.takeIf { it.isNotBlank() }
                     ?: defaultFilename(url, index)
-                val cacheFile = downloadToCache(context, url, filename, openConnection)
+                val cacheFile = downloadToCache(context, url, filename, execution, openConnection)
                     ?: return null
                 try {
-                    if (!insertIntoMediaStore(context, cacheFile, filename)) {
+                    if (!insertIntoMediaStore(context, cacheFile, filename, execution)) {
                         return null
                     }
                 } finally {
                     cacheFile.delete()
                 }
             }
+            checkExecution(execution)
             mergePrepared(params)
+        } catch (cancelled: TaskExecutionCancelledException) {
+            throw cancelled
         } catch (error: Exception) {
             Log.w(TAG, "preparePublishParams failed", error)
             null
@@ -120,15 +125,18 @@ object MediaBridge {
         context: Context,
         url: String,
         filename: String,
+        execution: TaskExecutionContext?,
         openConnection: (String) -> HttpURLConnection,
     ): File? {
+        checkExecution(execution)
         val connection = openConnection(url)
         return try {
             connection.requestMethod = "GET"
-            connection.connectTimeout = 15_000
-            connection.readTimeout = 30_000
+            connection.connectTimeout = boundedTimeout(execution, 15_000)
+            connection.readTimeout = boundedTimeout(execution, 30_000)
             connection.instanceFollowRedirects = true
             val code = connection.responseCode
+            checkExecution(execution)
             if (code !in 200..299) {
                 Log.w(TAG, "download HTTP $code for $url")
                 return null
@@ -137,10 +145,12 @@ object MediaBridge {
             val outFile = File(cacheDir, filename)
             connection.inputStream.use { input ->
                 outFile.outputStream().use { output ->
-                    input.copyTo(output)
+                    copyCooperatively(input, output, execution)
                 }
             }
             if (!outFile.exists() || outFile.length() == 0L) null else outFile
+        } catch (cancelled: TaskExecutionCancelledException) {
+            throw cancelled
         } catch (error: Exception) {
             Log.w(TAG, "download failed for $url", error)
             null
@@ -149,7 +159,13 @@ object MediaBridge {
         }
     }
 
-    private fun insertIntoMediaStore(context: Context, file: File, displayName: String): Boolean {
+    private fun insertIntoMediaStore(
+        context: Context,
+        file: File,
+        displayName: String,
+        execution: TaskExecutionContext?,
+    ): Boolean {
+        checkExecution(execution)
         val resolver = context.contentResolver
         val mime = guessMime(displayName)
         val values = ContentValues().apply {
@@ -171,22 +187,54 @@ object MediaBridge {
         }
         val uri: Uri = resolver.insert(collection, values) ?: return false
         return try {
+            checkExecution(execution)
             resolver.openOutputStream(uri)?.use { output ->
                 FileInputStream(file).use { input ->
-                    input.copyTo(output)
+                    copyCooperatively(input, output, execution)
                 }
             } ?: return false
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                checkExecution(execution)
                 values.clear()
                 values.put(MediaStore.Images.Media.IS_PENDING, 0)
                 resolver.update(uri, values, null, null)
             }
             true
+        } catch (cancelled: TaskExecutionCancelledException) {
+            resolver.delete(uri, null, null)
+            throw cancelled
         } catch (error: Exception) {
             Log.w(TAG, "MediaStore insert failed", error)
             resolver.delete(uri, null, null)
             false
         }
+    }
+
+    private fun copyCooperatively(
+        input: java.io.InputStream,
+        output: java.io.OutputStream,
+        execution: TaskExecutionContext?,
+    ) {
+        val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+        while (true) {
+            checkExecution(execution)
+            val count = input.read(buffer)
+            if (count < 0) return
+            output.write(buffer, 0, count)
+        }
+    }
+
+    private fun checkExecution(execution: TaskExecutionContext?) {
+        execution?.check()
+        if (Thread.currentThread().isInterrupted) {
+            throw InterruptedException("media preparation interrupted")
+        }
+    }
+
+    private fun boundedTimeout(execution: TaskExecutionContext?, maximumMs: Int): Int {
+        val remaining = execution?.remainingMillis() ?: return maximumMs
+        execution.check()
+        return remaining.coerceIn(1, maximumMs.toLong()).toInt()
     }
 
     private fun guessMime(filename: String): String {

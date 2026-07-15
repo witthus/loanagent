@@ -25,11 +25,18 @@ from loanagent.tasks import (
     TaskAccountNotFoundError,
     TaskAccountUnavailableError,
     TaskDeviceUnavailableError,
+    TaskDispatchAmbiguousError,
     TaskDispatchError,
+    TaskNetworkPolicyViolationError,
+    TaskPublishQuotaExceededError,
+    serialize_task_record,
+    task_dispatch_ambiguous_detail,
 )
 
 
 router = APIRouter(prefix="/api/v1")
+
+MAX_UPLOAD_BYTES = 25 * 1024 * 1024
 
 
 class ContentCreatePayload(BaseModel):
@@ -216,6 +223,12 @@ def delete_schedule(schedule_id: str, request: Request) -> dict:
         _schedule_repository(request).delete(schedule_id)
     except ScheduleNotFoundError as error:
         raise _http_error(404, "SCHEDULE_NOT_FOUND", "Schedule does not exist.") from error
+    except ScheduleNotEditableError as error:
+        raise _http_error(
+            409,
+            "SCHEDULE_NOT_EDITABLE",
+            "A schedule with a task reservation cannot be deleted.",
+        ) from error
     return {"ok": True, "schedule_id": schedule_id}
 
 
@@ -235,6 +248,11 @@ def dispatch_schedule(schedule_id: str, request: Request) -> dict:
         raise _http_error(404, "CONTENT_NOT_FOUND", "Content does not exist.") from error
     except MediaNotFoundError as error:
         raise _http_error(404, "MEDIA_NOT_FOUND", "Media does not exist.") from error
+    except TaskDispatchAmbiguousError as error:
+        raise HTTPException(
+            status_code=409,
+            detail=task_dispatch_ambiguous_detail(error),
+        ) from error
     return asdict(record)
 
 
@@ -274,22 +292,56 @@ def publish_immediate(payload: ImmediatePublishPayload, request: Request) -> dic
             "A11Y_DOWN",
             "Device accessibility service is not bound.",
         ) from error
+    except TaskNetworkPolicyViolationError as error:
+        raise _http_error(
+            409,
+            "NETWORK_POLICY_VIOLATION",
+            "Device is on Wi-Fi while the account requires cellular_only.",
+        ) from error
+    except TaskPublishQuotaExceededError as error:
+        raise _http_error(
+            429,
+            "PUBLISH_QUOTA_EXCEEDED",
+            "Account has reached its daily publish quota.",
+        ) from error
     except TaskAccountNotFoundError as error:
         raise _http_error(404, "ACCOUNT_NOT_FOUND", "Account does not exist.") from error
+    except TaskDispatchAmbiguousError as error:
+        raise HTTPException(
+            status_code=409,
+            detail=task_dispatch_ambiguous_detail(error),
+        ) from error
     except TaskDispatchError as error:
         raise _http_error(
             502,
             "TASK_DISPATCH_FAILED",
             "Task dispatch failed after persistence; retry with a new task_id.",
         ) from error
-    return asdict(task)
+    return serialize_task_record(task)
 
 
 async def _read_multipart_file(request: Request) -> tuple[str | None, str | None, bytes]:
     content_type = request.headers.get("content-type", "")
     if "multipart/form-data" not in content_type.lower():
         raise _http_error(400, "EXPECTED_MULTIPART", "Expected multipart/form-data upload.")
+    content_length = request.headers.get("content-length")
+    if content_length is not None:
+        try:
+            if int(content_length) > MAX_UPLOAD_BYTES:
+                raise _http_error(
+                    413,
+                    "UPLOAD_TOO_LARGE",
+                    f"Upload exceeds {MAX_UPLOAD_BYTES} bytes.",
+                )
+        except ValueError:
+            raise _http_error(400, "INVALID_CONTENT_LENGTH", "Invalid Content-Length.") from None
     body = await request.body()
+    if len(body) > MAX_UPLOAD_BYTES:
+        raise _http_error(
+            413,
+            "UPLOAD_TOO_LARGE",
+            f"Upload exceeds {MAX_UPLOAD_BYTES} bytes.",
+        )
     # email.parser understands MIME multipart without python-multipart.
     message = BytesParser(policy=email_default_policy).parsebytes(
         f"Content-Type: {content_type}\r\n\r\n".encode("utf-8") + body
@@ -309,6 +361,12 @@ async def _read_multipart_file(request: Request) -> tuple[str | None, str | None
         if payload is None:
             raw = part.get_payload(decode=False)
             payload = raw.encode("utf-8") if isinstance(raw, str) else b""
+        if len(payload) > MAX_UPLOAD_BYTES:
+            raise _http_error(
+                413,
+                "UPLOAD_TOO_LARGE",
+                f"Upload exceeds {MAX_UPLOAD_BYTES} bytes.",
+            )
         return filename, part_type, payload
     raise _http_error(400, "MISSING_FILE", 'Multipart field "file" is required.')
 

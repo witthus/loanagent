@@ -223,10 +223,47 @@ def test_reply_clean_text_creates_task() -> None:
     dm_tasks = [t for t in tasks.json() if t["playbook"] == "reply_dm@1.0"]
     assert len(dm_tasks) == 1
     assert any(
-        topic == f"devices/{device_id}/commands"
-        and payload["playbook"] == "reply_dm@1.0"
+        topic == f"devices/{device_id}/commands" and payload["playbook"] == "reply_dm@1.0"
         for topic, payload in mqtt_bus.published
     )
+
+
+def test_dm_route_returns_ambiguous_reconciliation_contract() -> None:
+    _device_id, account_id = create_bound_account()
+
+    class RecordThenFailBus(RecordingMqttBus):
+        def publish(self, topic: str, payload: dict) -> None:
+            super().publish(topic, payload)
+            raise RuntimeError("broker acknowledgement lost")
+
+    bus = RecordThenFailBus()
+    with TestClient(app, raise_server_exceptions=False) as client:
+        service = wire_services(client, bus)
+        response = client.post(
+            "/api/v1/inbox/reply",
+            headers=ops_headers(),
+            json={
+                "account_id": account_id,
+                "text": "谢谢关注，详情可私信了解～",
+                "thread_id": "thread-demo",
+            },
+        )
+        detail = response.json()["detail"]
+        persisted = client.get(
+            f"/api/v1/tasks/{detail['task_id']}",
+            headers=ops_headers(),
+        )
+
+    assert response.status_code == 409
+    assert detail["code"] == "TASK_DISPATCH_AMBIGUOUS"
+    assert detail["reconcile_required"] is True
+    assert detail["error_code"] == "EFFECT_UNKNOWN"
+    assert detail["retry_permitted"] is False
+    assert detail["action"] == "RECONCILE_ORIGINAL_TASK"
+    assert "new task_id" not in detail["message"]
+    assert persisted.status_code == 200
+    assert persisted.json()["status"] == "reconcile_required"
+    assert service.get(detail["task_id"]).reconcile_required is True
 
 
 def test_sync_creates_inbox_sync_task() -> None:
@@ -255,8 +292,7 @@ def test_sync_creates_inbox_sync_task() -> None:
     sync_tasks = [t for t in tasks.json() if t["playbook"] == "inbox_sync@1.0"]
     assert len(sync_tasks) == 1
     assert any(
-        topic == f"devices/{device_id}/commands"
-        and payload["playbook"] == "inbox_sync@1.0"
+        topic == f"devices/{device_id}/commands" and payload["playbook"] == "inbox_sync@1.0"
         for topic, payload in mqtt_bus.published
     )
 
@@ -264,10 +300,6 @@ def test_sync_creates_inbox_sync_task() -> None:
 def test_lead_mark_works() -> None:
     _, account_id = create_bound_account()
     mqtt_bus = RecordingMqttBus()
-
-    assert matching[0]["status"] == "hot"
-    assert matching[0]["account_id"] == account_id
-    assert matching[0]["title_summary"] == "高意向用户"
 
     with TestClient(app) as client:
         wire_services(client, mqtt_bus)
@@ -314,3 +346,22 @@ def test_lead_mark_works() -> None:
     assert detail.status_code == 200
     assert detail.json()["account_id"] == account_id
     assert detail.json()["title_summary"] == "高意向用户"
+
+
+def test_inbox_sync_refuses_when_disabled() -> None:
+    device_id, account_id = create_bound_account(role=AccountRole.ENGAGER)
+    accounts = AccountRepository(DATABASE_URL)
+    accounts.update(account_id, inbox_sync_enabled=False)
+
+    mqtt_bus = RecordingMqttBus()
+    with TestClient(app) as client:
+        wire_services(client, mqtt_bus)
+        response = client.post(
+            "/api/v1/inbox/sync",
+            headers=ops_headers(),
+            json={"account_id": account_id},
+        )
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "INBOX_SYNC_DISABLED"
+    assert mqtt_bus.published == []

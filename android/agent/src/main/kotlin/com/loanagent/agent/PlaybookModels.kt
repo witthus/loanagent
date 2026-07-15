@@ -54,6 +54,19 @@ data class PlaybookResult(
                 effectCommitted = effectCommitted,
                 resultPayload = resultPayload,
             )
+
+        fun unknown(
+            taskId: String,
+            errorCode: String = "EFFECT_UNKNOWN",
+            effectCommitted: Boolean = false,
+        ): PlaybookResult =
+            PlaybookResult(
+                taskId = taskId,
+                success = false,
+                status = "unknown",
+                errorCode = errorCode,
+                effectCommitted = effectCommitted,
+            )
     }
 }
 

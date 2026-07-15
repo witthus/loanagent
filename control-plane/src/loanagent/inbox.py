@@ -30,6 +30,12 @@ class InboxThreadNotFoundError(Exception):
     pass
 
 
+class InboxSyncDisabledError(Exception):
+    def __init__(self, account_id: str) -> None:
+        self.account_id = account_id
+        super().__init__(account_id)
+
+
 def reject_plaintext_contact(text: str) -> None:
     """Reject wechat-like / phone plaintext in reply_dm params."""
     if not text:
@@ -151,6 +157,11 @@ class InboxService:
     ) -> list[InboxThreadRecord]:
         results: list[InboxThreadRecord] = []
         with psycopg.connect(self.database_url) as connection:
+            # Serialize full-account replace so concurrent syncs cannot interleave deletes.
+            connection.execute(
+                "SELECT pg_advisory_xact_lock(hashtext(%s), hashtext(%s))",
+                ("inbox-replace", account_id),
+            )
             # Preserve lead status across replace by matching title_summary.
             saved_leads = connection.execute(
                 """
@@ -396,6 +407,21 @@ class InboxService:
         return self.upsert_threads(account_id, threads)
 
     def sync(self, account_id: str) -> TaskRecord:
+        with psycopg.connect(self.database_url) as connection:
+            row = connection.execute(
+                """
+                SELECT inbox_sync_enabled
+                FROM accounts
+                WHERE account_id = %s
+                """,
+                (account_id,),
+            ).fetchone()
+        if row is None:
+            from loanagent.tasks import TaskAccountNotFoundError
+
+            raise TaskAccountNotFoundError(account_id)
+        if not bool(row[0]):
+            raise InboxSyncDisabledError(account_id)
         return self.task_service.create_and_dispatch(
             account_id=account_id,
             playbook="inbox_sync@1.0",

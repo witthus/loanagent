@@ -18,7 +18,10 @@ from loanagent.tasks import (
     TaskAccountNotFoundError,
     TaskAccountUnavailableError,
     TaskDeviceUnavailableError,
+    TaskDispatchAmbiguousError,
     TaskDispatchError,
+    serialize_task_record,
+    task_dispatch_ambiguous_detail,
 )
 
 
@@ -42,10 +45,7 @@ def list_notes(
     request: Request,
     account_id: str | None = Query(default=None, min_length=1, max_length=128),
 ) -> list[dict]:
-    return [
-        asdict(note)
-        for note in _notes_service(request).list_notes(account_id=account_id)
-    ]
+    return [asdict(note) for note in _notes_service(request).list_notes(account_id=account_id)]
 
 
 @router.post("/notes/sync", dependencies=[Depends(require_ops)])
@@ -54,7 +54,7 @@ def sync_notes(payload: NotesSyncPayload, request: Request) -> dict:
         task = _notes_service(request).sync_notes(payload.account_id)
     except Exception as error:
         raise _map_task_error(error) from error
-    return asdict(task)
+    return serialize_task_record(task)
 
 
 @router.post("/notes/{note_id}/sync-comments", dependencies=[Depends(require_ops)])
@@ -65,7 +65,7 @@ def sync_note_comments(note_id: str, request: Request) -> dict:
         raise _http_error(404, "NOTE_NOT_FOUND", "Published note does not exist.") from error
     except Exception as error:
         raise _map_task_error(error) from error
-    return asdict(task)
+    return serialize_task_record(task)
 
 
 @router.get("/notes/{note_id}/comments", dependencies=[Depends(require_ops)])
@@ -87,7 +87,7 @@ def post_note_comment(note_id: str, payload: CommentReplyPayload, request: Reque
         raise _http_error(400, "COMPLIANCE_REJECTED", str(error)) from error
     except Exception as error:
         raise _map_task_error(error) from error
-    return asdict(task)
+    return serialize_task_record(task)
 
 
 @router.post("/comments/{comment_id}/reply", dependencies=[Depends(require_ops)])
@@ -100,7 +100,7 @@ def reply_comment(comment_id: str, payload: CommentReplyPayload, request: Reques
         raise _http_error(400, "COMPLIANCE_REJECTED", str(error)) from error
     except Exception as error:
         raise _map_task_error(error) from error
-    return asdict(task)
+    return serialize_task_record(task)
 
 
 def _notes_service(request: Request) -> NotesService:
@@ -132,6 +132,11 @@ def _map_task_error(error: Exception) -> HTTPException:
         )
     if isinstance(error, TaskAccountNotFoundError):
         return _http_error(404, "ACCOUNT_NOT_FOUND", "Account does not exist.")
+    if isinstance(error, TaskDispatchAmbiguousError):
+        return HTTPException(
+            status_code=409,
+            detail=task_dispatch_ambiguous_detail(error),
+        )
     if isinstance(error, TaskDispatchError):
         return _http_error(
             502,

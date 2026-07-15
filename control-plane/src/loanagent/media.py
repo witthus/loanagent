@@ -147,7 +147,10 @@ class MediaRepository:
 
 
 def _signing_secret() -> str:
-    return os.environ.get("MEDIA_SIGNING_SECRET") or os.environ.get("OPS_TOKEN") or ""
+    secret = (os.environ.get("MEDIA_SIGNING_SECRET") or "").strip()
+    if not secret:
+        raise MediaSignatureError("MEDIA_SIGNING_SECRET is required")
+    return secret
 
 
 def _media_from_row(row: tuple) -> MediaRecord:

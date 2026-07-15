@@ -4,12 +4,12 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any
-from uuid import uuid4
+from uuid import NAMESPACE_URL, uuid4, uuid5
 
 import psycopg
 
 from loanagent.accounts import AccountRepository
-from loanagent.content import ContentNotFoundError, ContentRepository
+from loanagent.content import ContentRepository
 from loanagent.db import migrate_fleet_schema
 from loanagent.media import MediaRepository
 from loanagent.tasks import (
@@ -17,7 +17,10 @@ from loanagent.tasks import (
     TaskAccountNotFoundError,
     TaskAccountUnavailableError,
     TaskDeviceUnavailableError,
+    TaskDispatchAmbiguousError,
     TaskDispatchError,
+    TaskNetworkPolicyViolationError,
+    TaskPublishQuotaExceededError,
     TaskRecord,
     TaskService,
 )
@@ -54,6 +57,14 @@ PATCHABLE_FIELDS = {
     "content_id",
     "window_start",
     "window_end",
+}
+_DISPATCH_VERSION = "v1"
+_DISPATCHED_TASK_STATUSES = {
+    "accepted",
+    "executing",
+    "effect_committed",
+    "reported",
+    "succeeded",
 }
 
 
@@ -129,7 +140,7 @@ class ScheduleRepository:
         if invalid:
             raise ValueError(f"unsupported schedule fields: {sorted(invalid)}")
         schedule = self.get(schedule_id)
-        if schedule.status not in {"ready", "failed"}:
+        if schedule.task_id is not None or schedule.status not in {"ready", "failed"}:
             raise ScheduleNotEditableError(schedule.status)
         if not changes:
             return schedule
@@ -144,28 +155,35 @@ class ScheduleRepository:
                 SET {", ".join(assignments)},
                     updated_at = CURRENT_TIMESTAMP
                 WHERE schedule_id = %s
+                  AND task_id IS NULL
+                  AND status IN ('ready', 'failed')
                 RETURNING schedule_id, account_id, content_id, window_start, window_end,
                     status, task_id, error_code, created_at, updated_at
                 """,
                 values,
             ).fetchone()
         if row is None:
-            raise ScheduleNotFoundError(schedule_id)
+            current = self.get(schedule_id)
+            raise ScheduleNotEditableError(current.status)
         return _schedule_from_row(row)
 
     def delete(self, schedule_id: str) -> None:
-        self.get(schedule_id)
+        schedule = self.get(schedule_id)
+        if schedule.task_id is not None:
+            raise ScheduleNotEditableError(schedule.status)
         with psycopg.connect(self.database_url) as connection:
             deleted = connection.execute(
                 """
                 DELETE FROM schedule_items
                 WHERE schedule_id = %s
+                  AND task_id IS NULL
                 RETURNING schedule_id
                 """,
                 (schedule_id,),
             ).fetchone()
         if deleted is None:
-            raise ScheduleNotFoundError(schedule_id)
+            current = self.get(schedule_id)
+            raise ScheduleNotEditableError(current.status)
 
     def publish_immediate(
         self,
@@ -190,28 +208,70 @@ class ScheduleRepository:
 
     def dispatch(self, schedule_id: str) -> ScheduleRecord:
         schedule = self.get(schedule_id)
-        if schedule.status not in {"ready", "failed"}:
+        if schedule.task_id is not None:
+            linked_task = self.task_service.get(schedule.task_id)
+            if (
+                linked_task.status == "reconcile_required"
+                or linked_task.error_code == "EFFECT_UNKNOWN"
+            ):
+                raise TaskDispatchAmbiguousError(linked_task)
+            if linked_task.status in _DISPATCHED_TASK_STATUSES:
+                return self._update(
+                    schedule_id,
+                    status="dispatched",
+                    task_id=linked_task.task_id,
+                    error_code=None,
+                )
+            if linked_task.status != "queued":
+                raise ScheduleNotDispatchableError(linked_task.status)
+        if schedule.task_id is None and schedule.status not in {"ready", "failed"}:
+            raise ScheduleNotDispatchableError(schedule.status)
+        if schedule.task_id is not None and schedule.status not in {
+            "ready",
+            "failed",
+            "dispatched",
+        }:
             raise ScheduleNotDispatchableError(schedule.status)
         content = self.content_repository.get(schedule.content_id)
         params = self._publish_params(content.title, content.body, content.media_ids)
+        task_id, operation_id = _dispatch_identity(schedule_id)
+        if schedule.task_id is not None and schedule.task_id != task_id:
+            raise ScheduleNotDispatchableError(schedule.status)
         try:
-            task = self.task_service.create_and_dispatch(
+            task = self.task_service.create_and_dispatch_idempotent(
                 account_id=schedule.account_id,
                 playbook="publish_note@1.0",
+                task_id=task_id,
+                operation_id=operation_id,
                 params=params,
                 source="scheduler",
+                before_publish=lambda queued: self._reserve_dispatch(
+                    schedule,
+                    queued,
+                ),
             )
+        except TaskDispatchAmbiguousError as error:
+            self._update(
+                schedule_id,
+                status=schedule.status,
+                task_id=error.task_id,
+                error_code="TASK_DISPATCH_AMBIGUOUS",
+            )
+            raise
         except (
             TaskAccountNotFoundError,
             TaskAccountUnavailableError,
             TaskDeviceUnavailableError,
             TaskAccessibilityDownError,
+            TaskNetworkPolicyViolationError,
+            TaskPublishQuotaExceededError,
             TaskDispatchError,
         ) as error:
             error_code = _error_code_for_exception(error)
             return self._update(
                 schedule_id,
                 status="failed",
+                task_id=getattr(error, "task_id", None),
                 error_code=error_code,
             )
         return self._update(
@@ -220,6 +280,44 @@ class ScheduleRepository:
             task_id=task.task_id,
             error_code=None,
         )
+
+    def _reserve_dispatch(
+        self,
+        schedule: ScheduleRecord,
+        task: TaskRecord,
+    ) -> ScheduleRecord:
+        with psycopg.connect(self.database_url) as connection:
+            row = connection.execute(
+                """
+                UPDATE schedule_items
+                SET task_id = %s,
+                    error_code = NULL,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE schedule_id = %s
+                  AND account_id = %s
+                  AND content_id = %s
+                  AND (
+                      (task_id IS NULL AND status IN ('ready', 'failed'))
+                      OR (
+                          task_id = %s
+                          AND status IN ('ready', 'failed', 'dispatched')
+                      )
+                  )
+                RETURNING schedule_id, account_id, content_id, window_start, window_end,
+                    status, task_id, error_code, created_at, updated_at
+                """,
+                (
+                    task.task_id,
+                    schedule.schedule_id,
+                    schedule.account_id,
+                    schedule.content_id,
+                    task.task_id,
+                ),
+            ).fetchone()
+        if row is None:
+            current = self.get(schedule.schedule_id)
+            raise ScheduleNotDispatchableError(current.status)
+        return _schedule_from_row(row)
 
     def _publish_params(
         self,
@@ -272,6 +370,8 @@ class ScheduleRepository:
 
 
 def _error_code_for_exception(error: Exception) -> str:
+    if isinstance(error, TaskDispatchAmbiguousError):
+        return "TASK_DISPATCH_AMBIGUOUS"
     if isinstance(error, TaskAccountNotFoundError):
         return "ACCOUNT_NOT_FOUND"
     if isinstance(error, TaskAccountUnavailableError):
@@ -280,9 +380,21 @@ def _error_code_for_exception(error: Exception) -> str:
         return "DEVICE_UNAVAILABLE"
     if isinstance(error, TaskAccessibilityDownError):
         return "A11Y_DOWN"
+    if isinstance(error, TaskNetworkPolicyViolationError):
+        return "NETWORK_POLICY_VIOLATION"
+    if isinstance(error, TaskPublishQuotaExceededError):
+        return "PUBLISH_QUOTA_EXCEEDED"
     if isinstance(error, TaskDispatchError):
         return "TASK_DISPATCH_FAILED"
     return "DISPATCH_FAILED"
+
+
+def _dispatch_identity(schedule_id: str) -> tuple[str, str]:
+    prefix = f"loanagent:schedule:{schedule_id}:dispatch:{_DISPATCH_VERSION}"
+    return (
+        str(uuid5(NAMESPACE_URL, f"{prefix}:task")),
+        str(uuid5(NAMESPACE_URL, f"{prefix}:operation")),
+    )
 
 
 def _schedule_from_row(row: tuple) -> ScheduleRecord:

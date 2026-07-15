@@ -10,6 +10,7 @@ from loanagent.auth import require_ops
 from loanagent.inbox import (
     ContactForbiddenError,
     InboxService,
+    InboxSyncDisabledError,
     InboxThreadNotFoundError,
 )
 from loanagent.tasks import (
@@ -18,7 +19,10 @@ from loanagent.tasks import (
     TaskAccountNotFoundError,
     TaskAccountUnavailableError,
     TaskDeviceUnavailableError,
+    TaskDispatchAmbiguousError,
     TaskDispatchError,
+    serialize_task_record,
+    task_dispatch_ambiguous_detail,
 )
 
 
@@ -86,8 +90,7 @@ def list_inbox_threads(
     account_id: str | None = Query(default=None),
 ) -> list[dict]:
     return [
-        asdict(thread)
-        for thread in _inbox_service(request).list_threads(account_id=account_id)
+        asdict(thread) for thread in _inbox_service(request).list_threads(account_id=account_id)
     ]
 
 
@@ -139,7 +142,7 @@ def reply_thread(thread_id: str, payload: InboxThreadReplyPayload, request: Requ
         ) from error
     except Exception as error:
         raise _map_task_error(error) from error
-    return asdict(task)
+    return serialize_task_record(task)
 
 
 @router.post("/inbox/ingest", dependencies=[Depends(require_ops)])
@@ -157,7 +160,7 @@ def sync_inbox(payload: InboxSyncPayload, request: Request) -> dict:
         task = _inbox_service(request).sync(payload.account_id)
     except Exception as error:
         raise _map_task_error(error) from error
-    return asdict(task)
+    return serialize_task_record(task)
 
 
 @router.post("/inbox/threads/{thread_id}/open", dependencies=[Depends(require_ops)])
@@ -172,7 +175,7 @@ def open_inbox_thread(thread_id: str, request: Request) -> dict:
         ) from error
     except Exception as error:
         raise _map_task_error(error) from error
-    return asdict(task)
+    return serialize_task_record(task)
 
 
 @router.post("/inbox/reply", dependencies=[Depends(require_ops)])
@@ -191,7 +194,7 @@ def reply_inbox(payload: InboxReplyPayload, request: Request) -> dict:
         ) from error
     except Exception as error:
         raise _map_task_error(error) from error
-    return asdict(task)
+    return serialize_task_record(task)
 
 
 @router.post("/inbox/leads", dependencies=[Depends(require_ops)])
@@ -245,6 +248,17 @@ def _map_task_error(error: Exception) -> HTTPException:
         )
     if isinstance(error, TaskAccountNotFoundError):
         return _http_error(404, "ACCOUNT_NOT_FOUND", "Account does not exist.")
+    if isinstance(error, InboxSyncDisabledError):
+        return _http_error(
+            409,
+            "INBOX_SYNC_DISABLED",
+            "Inbox sync is disabled for this account.",
+        )
+    if isinstance(error, TaskDispatchAmbiguousError):
+        return HTTPException(
+            status_code=409,
+            detail=task_dispatch_ambiguous_detail(error),
+        )
     if isinstance(error, TaskDispatchError):
         return _http_error(
             502,

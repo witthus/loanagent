@@ -194,7 +194,8 @@
           "enum": [
             "accepted",
             "executing",
-            "effect_committed"
+            "effect_committed",
+            "reported"
           ]
         },
         "progress": {

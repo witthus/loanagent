@@ -1,13 +1,17 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://loanagent.local/schemas/task.schema.json",
-  "title": "Task",
+  "$id": "https://loanagent.local/schemas/task-record.schema.json",
+  "title": "Persisted Task Record",
+  "description": "Canonical control-plane/API representation of a persisted task. This is distinct from the downstream task command contract.",
   "type": "object",
   "additionalProperties": false,
   "required": [
+    "schema_id",
     "schema_version",
     "task_id",
     "operation_id",
+    "device_id",
+    "account_id",
     "playbook",
     "params",
     "effect_class",
@@ -16,12 +20,23 @@
     "reconcile_required",
     "priority",
     "timeout_sec",
-    "source"
+    "source",
+    "error_code",
+    "created_at",
+    "updated_at",
+    "accepted_at",
+    "executing_at",
+    "effect_committed_at",
+    "reported_at",
+    "terminal_at",
+    "timeout_phase"
   ],
   "properties": {
+    "schema_id": {
+      "const": "task-record"
+    },
     "schema_version": {
-      "type": "string",
-      "pattern": "^[1-9][0-9]*\\.[0-9]+$"
+      "const": "1.0"
     },
     "task_id": {
       "type": "string",
@@ -32,7 +47,10 @@
       "minLength": 1
     },
     "device_id": {
-      "type": "string",
+      "type": [
+        "string",
+        "null"
+      ],
       "minLength": 1
     },
     "account_id": {
@@ -73,6 +91,22 @@
     "reconcile_required": {
       "type": "boolean"
     },
+    "priority": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 100
+    },
+    "timeout_sec": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "source": {
+      "enum": [
+        "scheduler",
+        "agent",
+        "manual"
+      ]
+    },
     "error_code": {
       "anyOf": [
         {
@@ -83,83 +117,74 @@
         }
       ]
     },
-    "priority": {
-      "type": "integer",
-      "minimum": 0,
-      "maximum": 100
-    },
-    "schedule_at": {
+    "created_at": {
       "type": "string",
       "format": "date-time"
     },
-    "timeout_sec": {
-      "type": "integer",
-      "minimum": 1
+    "updated_at": {
+      "type": "string",
+      "format": "date-time"
     },
-    "retry_policy": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "max_attempts"
+    "accepted_at": {
+      "type": [
+        "string",
+        "null"
       ],
-      "properties": {
-        "max_attempts": {
-          "type": "integer",
-          "minimum": 1
-        }
-      }
+      "format": "date-time"
     },
-    "source": {
+    "executing_at": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "date-time"
+    },
+    "effect_committed_at": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "date-time"
+    },
+    "reported_at": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "date-time"
+    },
+    "terminal_at": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "date-time"
+    },
+    "timeout_phase": {
       "enum": [
-        "scheduler",
-        "agent",
-        "manual"
+        "queued",
+        "execution",
+        "report",
+        null
       ]
-    },
-    "result_payload": {
-      "type": "object"
     }
   },
   "$defs": {
     "errorCode": {
+      "description": "Stable extensible error identifier in UPPER_SNAKE_CASE. Producers may add codes without a schema revision while preserving this format.",
       "type": "string",
-      "enum": [
-        "DEVICE_OFFLINE",
-        "DEVICE_LOCKED",
-        "SCREEN_NOT_READY",
-        "LAUNCH_BLOCKED",
-        "UI_NOT_FOUND",
-        "APP_CRASH",
-        "BUSINESS_BLOCKED",
+      "minLength": 2,
+      "maxLength": 64,
+      "pattern": "^[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)*$",
+      "examples": [
+        "OPERATOR_CANCELLED",
+        "DEVICE_OFFLINE_CANCELLED",
+        "NAV_MISSING_HINT",
         "TIMEOUT",
-        "PRECONDITION",
-        "A11Y_DISABLED",
         "EFFECT_UNKNOWN"
       ]
     }
   },
-  "oneOf": [
-    {
-      "required": [
-        "device_id"
-      ],
-      "not": {
-        "required": [
-          "account_id"
-        ]
-      }
-    },
-    {
-      "required": [
-        "account_id"
-      ],
-      "not": {
-        "required": [
-          "device_id"
-        ]
-      }
-    }
-  ],
   "allOf": [
     {
       "if": {
@@ -180,10 +205,7 @@
           "error_code": {
             "const": "EFFECT_UNKNOWN"
           }
-        },
-        "required": [
-          "error_code"
-        ]
+        }
       }
     },
     {

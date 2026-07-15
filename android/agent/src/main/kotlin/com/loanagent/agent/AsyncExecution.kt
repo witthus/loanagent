@@ -684,10 +684,11 @@ class M0ExecutionCoordinator(
             SelectorMatchStatus.INDETERMINATE -> return indeterminate(request.action)
             SelectorMatchStatus.UNIQUE -> Unit
         }
+        val ime = port.imeStatus()
         val route = inputStrategy.choose(
             editable = attempt.editable,
             setTextSupported = attempt.accepted,
-            imeEnabled = port.imeStatus().enabled,
+            imeEnabled = ime.enabled,
         )
         val inputMessage = inputRouteMessage(route, text)
         return when (route) {
@@ -705,8 +706,15 @@ class M0ExecutionCoordinator(
                 expectedLease,
                 cancelled,
                 inputMessage,
+                imeEnabled = ime.enabled,
             )
-            InputRoute.MANUAL_IME,
+            InputRoute.MANUAL_IME -> executeImeCommit(
+                text,
+                request,
+                expectedLease,
+                cancelled,
+                inputMessage,
+            )
             InputRoute.BLOCKED_ENABLE_IME_MANUALLY,
             InputRoute.BLOCKED_NOT_EDITABLE,
             -> result(
@@ -725,6 +733,7 @@ class M0ExecutionCoordinator(
         expectedLease: TargetLease,
         cancelled: AtomicBoolean,
         inputMessage: String,
+        imeEnabled: Boolean,
     ): ActionResult {
         val attempt = port.pasteTextNode(expectedLease, selector, text)
         if (attempt.leaseLost) return leaseLost(request.action)
@@ -734,10 +743,46 @@ class M0ExecutionCoordinator(
             SelectorMatchStatus.INDETERMINATE -> return indeterminate(request.action)
             SelectorMatchStatus.UNIQUE -> Unit
         }
-        if (!attempt.accepted) {
-            return rejected(request.action, "clipboard_paste_rejected $inputMessage")
+        if (attempt.accepted) {
+            return afterAccepted(request, expectedLease, ActionPath.NODE_ACTION, cancelled, inputMessage)
         }
-        return afterAccepted(request, expectedLease, ActionPath.NODE_ACTION, cancelled, inputMessage)
+        if (imeEnabled) {
+            val imeResult = executeImeCommit(
+                text,
+                request,
+                expectedLease,
+                cancelled,
+                "$inputMessage;clipboard_paste_rejected",
+            )
+            if (imeResult.status == ActionStatus.SUCCESS) {
+                return imeResult
+            }
+        }
+        return rejected(request.action, "clipboard_paste_rejected $inputMessage")
+    }
+
+    private fun executeImeCommit(
+        text: String,
+        request: ActionRequest,
+        expectedLease: TargetLease,
+        cancelled: AtomicBoolean,
+        inputMessage: String,
+    ): ActionResult {
+        if (M0InputMethodService.commitIntoFocusedEditor(text)) {
+            return afterAccepted(
+                request,
+                expectedLease,
+                ActionPath.NODE_ACTION,
+                cancelled,
+                "$inputMessage;ime_auto_commit",
+            )
+        }
+        return result(
+            request.action,
+            ActionStatus.IME_FALLBACK_REQUIRED,
+            ExecutionStage.IME_FALLBACK_REQUIRED,
+            inputMessage,
+        )
     }
 
     private fun executeGesture(

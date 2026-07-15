@@ -1,9 +1,11 @@
+import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from contextlib import suppress
 from dataclasses import asdict
+import os
 from pathlib import Path
 from typing import Literal
-import os
 
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse
@@ -52,13 +54,14 @@ from loanagent.notes_routes import router as notes_router
 from loanagent.roles import AccountRole
 from loanagent.schedules import ScheduleRepository
 from loanagent.task_routes import router as task_router
-from loanagent.tasks import TaskService
+from loanagent.tasks import TaskService, TaskTimeoutSettings, run_task_timeout_scanner
 from loanagent.web.routes import router as ops_web_router
 
 
 @asynccontextmanager
 async def lifespan(application: FastAPI) -> AsyncIterator[None]:
     database_url = os.environ["DATABASE_URL"]
+    timeout_settings = TaskTimeoutSettings.from_env()
     enrollment_repository = EnrollmentRepository(database_url)
     enrollment_repository.migrate()
     migrate_fleet_schema(database_url)
@@ -69,6 +72,7 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
     task_service = TaskService(
         database_url,
         MqttCommandBus(os.environ.get("MQTT_URL", "mqtt://localhost:1883")),
+        timeout_settings=timeout_settings,
     )
     engagement_service = EngagementService(database_url, task_service)
     task_service.engagement_service = engagement_service
@@ -89,10 +93,25 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
     dist = _ops_web_dist()
     if dist is not None:
         assets = dist / "assets"
-        already = any(getattr(route, "name", None) == "ops-web-assets" for route in application.routes)
+        already = any(
+            getattr(route, "name", None) == "ops-web-assets" for route in application.routes
+        )
         if assets.is_dir() and not already:
             application.mount("/assets", StaticFiles(directory=assets), name="ops-web-assets")
-    yield
+    timeout_scanner = asyncio.create_task(
+        run_task_timeout_scanner(
+            task_service,
+            interval_sec=timeout_settings.scan_interval_sec,
+        ),
+        name="task-timeout-scanner",
+    )
+    application.state.task_timeout_scanner = timeout_scanner
+    try:
+        yield
+    finally:
+        timeout_scanner.cancel()
+        with suppress(asyncio.CancelledError):
+            await timeout_scanner
 
 
 app = FastAPI(
@@ -179,9 +198,7 @@ def enroll(payload: EnrollmentPayload, request: Request) -> dict[str, str]:
         EnrollmentConsumeStatus.IDEMPOTENT_RETRY,
     }:
         status = (
-            "enrolled"
-            if result.status is EnrollmentConsumeStatus.CONSUMED
-            else "already_enrolled"
+            "enrolled" if result.status is EnrollmentConsumeStatus.CONSUMED else "already_enrolled"
         )
         return {"status": status, "device_id": payload.device.device_id}
 

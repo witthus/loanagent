@@ -11,7 +11,7 @@ import org.robolectric.annotation.Config
 @Config(sdk = [35])
 class TaskCommandDispatcherTest {
     @Test
-    fun dedupesSameTaskIdAndReportsOnce() {
+    fun dedupesSameTaskIdAndReReportsSavedFinal() {
         var accessChecks = 0
         val runtime = object : PlaybookEngineTest.FakePlaybookRuntime(startHint = PageHint.HOME) {
             override fun accessibilityAlive(): Boolean {
@@ -33,11 +33,11 @@ class TaskCommandDispatcherTest {
             },
         )
         val payload =
-            """{"task_id":"t1","playbook":"ensure_app_ready@1.0","account_id":"a1"}"""
+            """{"task_id":"t1","playbook":"ensure_app_ready@1.0","account_id":"a1","effect_class":"readonly"}"""
         dispatcher.handleMqttPayload(payload)
         dispatcher.handleMqttPayload(payload)
         assertEquals(1, accessChecks)
-        assertEquals(listOf("t1:succeeded"), reports)
+        assertEquals(listOf("t1:executing", "t1:succeeded", "t1:succeeded"), reports)
     }
 
     @Test
@@ -56,9 +56,12 @@ class TaskCommandDispatcherTest {
             },
         )
         dispatcher.handleMqttPayload(
-            """{"task_id":"t2","playbook":"not_a_real_playbook@1.0"}""",
+            """{"task_id":"t2","playbook":"not_a_real_playbook@1.0","effect_class":"readonly"}""",
         )
-        assertEquals(listOf("t2:failed:UNSUPPORTED_PLAYBOOK"), reports)
+        assertEquals(
+            listOf("t2:executing:null", "t2:failed:UNSUPPORTED_PLAYBOOK"),
+            reports,
+        )
     }
 
     @Test
@@ -83,7 +86,7 @@ class TaskCommandDispatcherTest {
     }
 
     @Test
-    fun replyCommentReportsWrongPage() {
+    fun replyCommentReportsMissingNavigationHint() {
         val engine = PlaybookEngine(
             runtime = PlaybookEngineTest.FakePlaybookRuntime(startHint = PageHint.HOME),
             registry = DefaultPlaybookRegistry.create(),
@@ -99,11 +102,14 @@ class TaskCommandDispatcherTest {
         ).handleMqttPayload(
             """{"task_id":"t4","playbook":"reply_comment@1.0","effect_class":"non_idempotent","params":{"text":"hi"}}""",
         )
-        assertEquals(listOf("t4:failed:WRONG_PAGE"), reports)
+        assertEquals(
+            listOf("t4:executing:null", "t4:failed:NAV_MISSING_HINT"),
+            reports,
+        )
     }
 
     @Test
-    fun postCommentReportsWrongPage() {
+    fun postCommentReportsMissingNavigationHint() {
         val engine = PlaybookEngine(
             runtime = PlaybookEngineTest.FakePlaybookRuntime(startHint = PageHint.HOME),
             registry = DefaultPlaybookRegistry.create(),
@@ -119,6 +125,9 @@ class TaskCommandDispatcherTest {
         ).handleMqttPayload(
             """{"task_id":"t5","playbook":"post_comment@1.0","effect_class":"non_idempotent","params":{"text":"hi"}}""",
         )
-        assertEquals(listOf("t5:failed:WRONG_PAGE"), reports)
+        assertEquals(
+            listOf("t5:executing:null", "t5:failed:NAV_MISSING_HINT"),
+            reports,
+        )
     }
 }

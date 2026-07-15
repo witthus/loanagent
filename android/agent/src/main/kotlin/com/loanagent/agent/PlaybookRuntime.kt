@@ -4,6 +4,11 @@ package com.loanagent.agent
  * Playbook-facing automation surface. E0 used ensure-only methods; E1+ adds observe/act/extract.
  */
 interface PlaybookRuntime {
+    /**
+     * Marks the point immediately before a non-idempotent external effect can occur.
+     * Authorization to click a final control is not itself proof that the effect boundary was crossed.
+     */
+    fun beginSideEffect() = Unit
     fun accessibilityAlive(): Boolean
     fun launchXhs(): Boolean
     fun waitForXhsForeground(timeoutMs: Long): Boolean
