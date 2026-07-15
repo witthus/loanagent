@@ -22,6 +22,8 @@ describe('humanizeError', () => {
     expect(humanizeError('DEVICE_ALREADY_BOUND').title).toContain('绑')
     expect(humanizeError('SET_TEXT_FAILED').title).toContain('输入框')
     expect(humanizeError('EDITOR_NOT_READY').title).toContain('编辑页')
+    expect(humanizeError('NETWORK_POLICY_VIOLATION').title).toContain('网络')
+    expect(humanizeError('PUBLISH_QUOTA_EXCEEDED').title).toContain('配额')
   })
 })
 

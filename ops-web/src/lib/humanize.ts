@@ -125,6 +125,16 @@ const MAP: Record<string, HumanMessage> = {
     detail: '内容可能已填好，但发布按钮未点中或被拦截。',
     nextStep: '到手机上看是否停在编辑页，可手动点发布；或清空后重试。',
   },
+  NETWORK_POLICY_VIOLATION: {
+    title: '当前网络不符合账号策略',
+    detail: '账号要求仅蜂窝上网时，手机连着 Wi‑Fi 不能发帖、评论等副作用任务；任务不会创建。',
+    nextStep: '关掉手机 Wi‑Fi 只用流量，或到「账号」把网络策略改为允许 Wi‑Fi 后再试。',
+  },
+  PUBLISH_QUOTA_EXCEEDED: {
+    title: '今日发帖配额已用完',
+    detail: '该账号当天成功发布次数已达上限，新的发帖任务不会创建。',
+    nextStep: '明天再发，或到「账号」提高每日发帖配额。',
+  },
 }
 
 export function humanizeError(errorCode: string | null | undefined): HumanMessage {

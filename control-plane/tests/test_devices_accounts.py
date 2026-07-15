@@ -178,6 +178,44 @@ def test_device_heartbeat_api_upserts_online_device_and_lists_it() -> None:
     assert row["cellular_ok"] is True
     assert devices.status_code == 200
     assert any(device["device_id"] == device_id for device in devices.json())
+    assert row["bound_account"] is None
+
+
+def test_device_heartbeat_includes_bound_account_summary() -> None:
+    from loanagent.accounts import AccountRepository
+    from loanagent.devices import DeviceRepository
+
+    device_id = unique_id("device-bound-hb")
+    account_id = unique_id("account-bound-hb")
+    DeviceRepository(DATABASE_URL).heartbeat(
+        device_id=device_id,
+        agent_version="0.2.0",
+        a11y_bound=True,
+        wifi_connected=False,
+        cellular_ok=True,
+    )
+    AccountRepository(DATABASE_URL).create(
+        account_id=account_id,
+        role=AccountRole.PUBLISHER_MAIN,
+        device_id=device_id,
+        display_name="主号测试机",
+    )
+
+    with TestClient(app) as client:
+        heartbeat = client.post(
+            f"/api/v1/devices/{device_id}/heartbeat",
+            headers=device_headers(),
+            json={"agent_version": "0.2.0", "a11y_bound": True},
+        )
+
+    assert heartbeat.status_code == 200
+    bound = heartbeat.json()["bound_account"]
+    assert bound == {
+        "account_id": account_id,
+        "display_name": "主号测试机",
+        "role": "PUBLISHER_MAIN",
+        "status": "active",
+    }
 
 
 def test_device_heartbeat_captures_peer_ip_without_blocking_on_geo(monkeypatch) -> None:

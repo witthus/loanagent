@@ -120,6 +120,22 @@ class AccountRepository:
             raise AccountNotFoundError(account_id)
         return _account_from_row(row)
 
+    def find_by_device_id(self, device_id: str) -> AccountRecord | None:
+        with psycopg.connect(self.database_url) as connection:
+            row = connection.execute(
+                """
+                SELECT account_id, role, device_id, status, network_policy,
+                    daily_publish_quota, inbox_sync_enabled, display_name, platform,
+                    created_at, updated_at
+                FROM accounts
+                WHERE device_id = %s
+                """,
+                (device_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return _account_from_row(row)
+
     def list(self, *, platform: str | None = None) -> list[AccountRecord]:
         query = """
             SELECT account_id, role, device_id, status, network_policy,

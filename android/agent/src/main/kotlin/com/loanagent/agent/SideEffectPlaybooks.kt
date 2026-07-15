@@ -1,5 +1,7 @@
 package com.loanagent.agent
 
+import android.util.Log
+
 /**
  * Graph-note publish. Params: title, body; optional start_in_editor (skip album),
  * album_tap_x / album_tap_y (absolute px for first-grid pick when not start_in_editor).
@@ -27,37 +29,36 @@ class PublishNotePlaybook : Playbook {
             if (!openPublishEntry(runtime)) {
                 return PlaybookResult.failed(taskId, "PUBLISH_ENTRY_FAILED")
             }
-            runtime.sleep(1_000)
+            runtime.sleep(700)
             // Prefer geometric tap — a11y click on sheet rows is unreliable on HyperOS.
             val albumOpened =
                 tapLabeled(runtime, "从相册选择") ||
-                    runtime.click("text=从相册选择", allowFinal = false, timeoutMs = 4_000) ||
-                    runtime.click("text=相册", allowFinal = false, timeoutMs = 3_000) ||
+                    runtime.click("text=从相册选择", allowFinal = false, timeoutMs = 3_000) ||
+                    runtime.click("text=相册", allowFinal = false, timeoutMs = 2_000) ||
                     runtime.tap(540, 1757)
             if (!albumOpened) {
                 return PlaybookResult.failed(taskId, "PUBLISH_ENTRY_FAILED")
             }
-            runtime.sleep(2_000)
+            // Wait once for picker + MediaStore refresh (was 2s + 1.5s + 1s).
+            runtime.sleep(1_200)
             // Dismiss permission prompts if present.
-            runtime.click("text=允许", allowFinal = false, timeoutMs = 2_000) ||
-                runtime.click("text=始终允许", allowFinal = false, timeoutMs = 2_000) ||
-                runtime.click("text=仅使用期间允许", allowFinal = false, timeoutMs = 2_000)
-            runtime.sleep(800)
+            runtime.click("text=允许", allowFinal = false, timeoutMs = 1_500) ||
+                runtime.click("text=始终允许", allowFinal = false, timeoutMs = 1_500) ||
+                runtime.click("text=仅使用期间允许", allowFinal = false, timeoutMs = 1_500)
+            runtime.sleep(400)
             val tapX = command.intParam("album_tap_x", 177)
             val tapY = command.intParam("album_tap_y", 532)
             if (!runtime.tap(tapX, tapY)) {
                 return PlaybookResult.failed(taskId, "MEDIA_MISSING")
             }
-            runtime.sleep(1_500)
-            // Newly inserted MediaStore items may need a moment before the picker lists them.
             runtime.sleep(1_000)
             tapLabeled(runtime, "全部")
-            runtime.sleep(500)
+            runtime.sleep(400)
             var rounds = 0
             while (rounds < 6 && !editorReady(runtime)) {
                 val advanced = advancePublishWizard(runtime)
                 if (!advanced) break
-                runtime.sleep(1_500)
+                runtime.sleep(1_000)
                 rounds += 1
             }
         }
@@ -65,23 +66,23 @@ class PublishNotePlaybook : Playbook {
         if (!fillPublishField(runtime, TITLE_HINTS, title, editableIndex = 0)) {
             return PlaybookResult.failed(
                 taskId,
-                if (startInEditor) "SET_TEXT_FAILED" else "EDITOR_NOT_READY",
+                if (startInEditor || editorReady(runtime)) "SET_TEXT_FAILED" else "EDITOR_NOT_READY",
             )
         }
-        runtime.sleep(400)
+        runtime.sleep(200)
         if (!fillPublishField(runtime, BODY_HINTS, body, editableIndex = 1)) {
             return PlaybookResult.failed(taskId, "SET_TEXT_FAILED")
         }
-        runtime.sleep(400)
+        runtime.sleep(200)
         if (!fieldLooksFilled(runtime, body)) {
             return PlaybookResult.failed(taskId, "SET_TEXT_FAILED")
         }
-        runtime.sleep(500)
+        runtime.sleep(300)
         runtime.beginSideEffect()
-        if (!runtime.click("text=发布笔记", allowFinal = true, timeoutMs = 15_000)) {
+        if (!runtime.click("text=发布笔记", allowFinal = true, timeoutMs = 12_000)) {
             return PlaybookResult.failed(taskId, "FINAL_ACTION_BLOCKED")
         }
-        runtime.sleep(2_000)
+        runtime.sleep(1_500)
         return PlaybookResult.succeeded(
             taskId,
             effectCommitted = true,
@@ -93,9 +94,8 @@ class PublishNotePlaybook : Playbook {
     }
 
     /**
-     * Fill title/body. XHS body EditText often needs an explicit focus tap before
-     * ACTION_SET_TEXT / clipboard paste; hint copy also drifts across versions.
-     * After focus, className match may hit both title+body — runtime prefers focused.
+     * Fill title/body. Prefer already-correct + nth EditText (Wi‑Fi: watch tag PublishFill).
+     * Hint matching is a short fallback — XHS often autofills and removes hint labels.
      */
     private fun fillPublishField(
         runtime: PlaybookRuntime,
@@ -103,39 +103,79 @@ class PublishNotePlaybook : Playbook {
         text: String,
         editableIndex: Int,
     ): Boolean {
-        fun tryHints(): Boolean =
-            hints.any { hint ->
-                runtime.setText("text=$hint", text, timeoutMs = 5_000) ||
-                    runtime.setText("contentDescription=$hint", text, timeoutMs = 3_000)
-            }
+        val field = if (editableIndex == 0) "title" else "body"
+        if (fieldLooksFilled(runtime, text)) {
+            Log.i(TAG, "field=$field strategy=already_filled ok=true")
+            return true
+        }
 
-        if (tryHints() && fieldLooksFilled(runtime, text)) return true
+        if (setTextOnNthEditable(runtime, editableIndex, text, hints, field)) {
+            return true
+        }
+        if (fieldLooksFilled(runtime, text)) {
+            Log.i(TAG, "field=$field strategy=already_filled_after_nth ok=true")
+            return true
+        }
 
-        for (hint in hints) {
+        val hintOk = tryHintSelectors(runtime, hints, text, field, timeoutMs = 2_000)
+        if (hintOk && fieldLooksFilled(runtime, text)) return true
+
+        for (hint in hints.take(3)) {
             val focused =
                 tapLabeled(runtime, hint) ||
-                    runtime.click("text=$hint", allowFinal = false, timeoutMs = 2_000) ||
-                    runtime.click("contentDescription=$hint", allowFinal = false, timeoutMs = 2_000)
+                    runtime.click("text=$hint", allowFinal = false, timeoutMs = 1_200) ||
+                    runtime.click("contentDescription=$hint", allowFinal = false, timeoutMs = 1_200)
             if (!focused) continue
-            runtime.sleep(600)
-            if (tryHints() && fieldLooksFilled(runtime, text)) return true
-            // Focused node should win className disambiguation after the tap.
-            if (
-                runtime.setText("className=android.widget.EditText", text, timeoutMs = 8_000) &&
+            runtime.sleep(350)
+            if (tryHintSelectors(runtime, listOf(hint), text, field, timeoutMs = 2_000) &&
                 fieldLooksFilled(runtime, text)
+            ) {
+                return true
+            }
+            if (
+                attemptSetText(
+                    runtime,
+                    "className=android.widget.EditText",
+                    text,
+                    field,
+                    "focus_classname",
+                    timeoutMs = 4_000,
+                ) && fieldLooksFilled(runtime, text)
             ) {
                 return true
             }
         }
 
-        return setTextOnNthEditable(runtime, editableIndex, text, hints)
+        val finalOk = fieldLooksFilled(runtime, text)
+        Log.i(TAG, "field=$field strategy=exhausted ok=$finalOk")
+        return finalOk
     }
+
+    private fun tryHintSelectors(
+        runtime: PlaybookRuntime,
+        hints: List<String>,
+        text: String,
+        field: String,
+        timeoutMs: Long,
+    ): Boolean =
+        hints.any { hint ->
+            attemptSetText(runtime, "text=$hint", text, field, "hint_text", timeoutMs) ||
+                attemptSetText(
+                    runtime,
+                    "contentDescription=$hint",
+                    text,
+                    field,
+                    "hint_desc",
+                    timeoutMs = (timeoutMs * 3 / 4).coerceAtLeast(1_000),
+                )
+        }
 
     private fun setTextOnNthEditable(
         runtime: PlaybookRuntime,
         index: Int,
         text: String,
         hints: List<String>,
+        field: String,
     ): Boolean {
         val snapshot = runtime.observe() ?: return false
         val editables = snapshot.nodes
@@ -146,34 +186,56 @@ class PublishNotePlaybook : Playbook {
                 val label = node.text?.trim().orEmpty()
                 label.isEmpty() || hints.any { it == label }
             }
-            ?: return false
+        if (target == null) {
+            Log.i(TAG, "field=$field strategy=nth index=$index editables=${editables.size} ok=false")
+            return false
+        }
         val bounds = target.bounds ?: return false
         runtime.tap(bounds.centerX, bounds.centerY)
-        runtime.sleep(700)
+        runtime.sleep(400)
 
         val label = target.text?.trim().orEmpty()
-        if (label.isNotEmpty() && runtime.setText("text=$label", text, timeoutMs = 8_000) &&
+        if (label.isNotEmpty() &&
+            attemptSetText(runtime, "text=$label", text, field, "nth_label", timeoutMs = 4_000) &&
             fieldLooksFilled(runtime, text)
         ) {
             return true
         }
-        if (hints.any { hint ->
-                runtime.setText("text=$hint", text, timeoutMs = 4_000) ||
-                    runtime.setText("contentDescription=$hint", text, timeoutMs = 3_000)
-            } && fieldLooksFilled(runtime, text)
-        ) {
-            return true
-        }
-
-        // Prefer focused EditText among title+body after the tap above.
         if (
-            runtime.setText("className=android.widget.EditText", text, timeoutMs = 8_000) &&
-            fieldLooksFilled(runtime, text)
+            attemptSetText(
+                runtime,
+                "className=android.widget.EditText",
+                text,
+                field,
+                "nth_classname",
+                timeoutMs = 4_000,
+            ) && fieldLooksFilled(runtime, text)
         ) {
             return true
         }
-        return runtime.setText("className=android.widget.EditText;clickable=true", text, timeoutMs = 4_000) &&
-            fieldLooksFilled(runtime, text)
+        return attemptSetText(
+            runtime,
+            "className=android.widget.EditText;clickable=true",
+            text,
+            field,
+            "nth_classname_clickable",
+            timeoutMs = 3_000,
+        ) && fieldLooksFilled(runtime, text)
+    }
+
+    private fun attemptSetText(
+        runtime: PlaybookRuntime,
+        selector: String,
+        text: String,
+        field: String,
+        strategy: String,
+        timeoutMs: Long,
+    ): Boolean {
+        val started = System.nanoTime()
+        val ok = runtime.setText(selector, text, timeoutMs = timeoutMs)
+        val elapsedMs = (System.nanoTime() - started) / 1_000_000
+        Log.i(TAG, "field=$field strategy=$strategy selector=$selector ok=$ok ${elapsedMs}ms")
+        return ok
     }
 
     /** Confirm the typed value actually appears (avoid false SUCCESS on empty body publish). */
@@ -197,12 +259,12 @@ class PublishNotePlaybook : Playbook {
         val attempts: List<() -> Boolean> = listOf(
             { SurfaceNavigator.tapBottomTab(runtime, "发布") },
             { runtime.tap(540, 2294) },
-            { runtime.click("contentDescription=发布", allowFinal = true, timeoutMs = 4_000) },
-            { runtime.click("text=发布", allowFinal = true, timeoutMs = 3_000) },
+            { runtime.click("contentDescription=发布", allowFinal = true, timeoutMs = 3_000) },
+            { runtime.click("text=发布", allowFinal = true, timeoutMs = 2_500) },
         )
         for (attempt in attempts) {
             if (!attempt()) continue
-            runtime.sleep(1_000)
+            runtime.sleep(700)
             if (publishSheetOpen(runtime)) return true
         }
         return false
@@ -221,22 +283,22 @@ class PublishNotePlaybook : Playbook {
     private fun resetToHomeFeed(runtime: PlaybookRuntime) {
         // Leave note-detail / capa mid-flows. Launch clears back to the main index when possible.
         runtime.launchXhs()
-        runtime.sleep(1_200)
+        runtime.sleep(900)
         for (i in 0 until 6) {
             if (runtime.currentPageHint() == PageHint.HOME) break
             runtime.globalBack()
-            runtime.sleep(300)
+            runtime.sleep(250)
         }
         SurfaceNavigator.tapBottomTab(runtime, "首页") ||
-            runtime.click("contentDescription=首页", allowFinal = false, timeoutMs = 2_000) ||
-            runtime.click("text=首页", allowFinal = false, timeoutMs = 2_000) ||
+            runtime.click("contentDescription=首页", allowFinal = false, timeoutMs = 1_500) ||
+            runtime.click("text=首页", allowFinal = false, timeoutMs = 1_500) ||
             runtime.tap(108, 2294)
-        runtime.sleep(900)
+        runtime.sleep(700)
         if (runtime.currentPageHint() != PageHint.HOME) {
             runtime.launchXhs()
-            runtime.sleep(1_500)
+            runtime.sleep(1_200)
             SurfaceNavigator.tapBottomTab(runtime, "首页") || runtime.tap(108, 2294)
-            runtime.sleep(900)
+            runtime.sleep(700)
         }
     }
 
@@ -272,18 +334,23 @@ class PublishNotePlaybook : Playbook {
     private fun editorReady(runtime: PlaybookRuntime): Boolean {
         if (runtime.currentPageHint() == PageHint.EDITOR) return true
         val snapshot = runtime.observe() ?: return false
+        val hasPublishCta = snapshot.nodes.any { n ->
+            val t = n.text.orEmpty()
+            val d = n.contentDescription.orEmpty()
+            t == "发布笔记" || d == "发布笔记" || t == "存草稿"
+        }
+        val editableCount = snapshot.nodes.count { it.editable && it.bounds?.isUsable == true }
+        if (hasPublishCta && editableCount >= 1) return true
         return snapshot.nodes.any { n ->
             val t = n.text.orEmpty()
             val d = n.contentDescription.orEmpty()
-            t == "添加标题" || d == "添加标题" ||
-                t == "添加正文" || d == "添加正文" ||
-                t == "发布笔记" || d == "发布笔记" ||
-                TITLE_HINTS.any { it == t || it == d } ||
+            TITLE_HINTS.any { it == t || it == d } ||
                 BODY_HINTS.any { it == t || it == d }
         }
     }
 
     companion object {
+        private const val TAG = "PublishFill"
         private const val TITLE_SUMMARY_LIMIT = 64
         private val TITLE_HINTS = listOf("添加标题", "填写标题", "标题")
         private val BODY_HINTS = listOf(

@@ -528,9 +528,16 @@ class CloudBridgeCoordinator(
                     }
                 },
             ).also { it.start() }
+            CloudBridgeStatusHub.update {
+                it.copy(
+                    bridgeRunning = true,
+                    controlPlaneHost = CloudBridgeConfig.CONTROL_PLANE_BASE_URL,
+                )
+            }
             Log.i(TAG, "cloud bridge started for ${CloudBridgeConfig.DEVICE_ID}")
         } catch (error: Exception) {
             Log.e(TAG, "cloud bridge start failed", error)
+            CloudBridgeStatusHub.update { it.copy(bridgeRunning = false) }
             stop()
             throw error
         }
@@ -539,6 +546,7 @@ class CloudBridgeCoordinator(
     fun stop(): Boolean {
         closed.set(true)
         started.set(false)
+        CloudBridgeStatusHub.update { it.copy(bridgeRunning = false) }
         heartbeatFuture?.cancel(true)
         heartbeatFuture = null
         pollFuture?.cancel(true)

@@ -130,6 +130,7 @@ class MqttCommandClient(
                 throw IllegalStateException("MQTT SUBACK missing")
             }
             Log.i(TAG, "mqtt subscribed $topic")
+            CloudBridgeStatusHub.update { it.copy(mqttConnected = true) }
             while (started.get() && !sock.isClosed) {
                 val packet = try {
                     readPacket(input)
@@ -156,6 +157,7 @@ class MqttCommandClient(
                 }
             }
         } finally {
+            CloudBridgeStatusHub.update { it.copy(mqttConnected = false) }
             try {
                 sock.close()
             } catch (_: Exception) {

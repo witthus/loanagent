@@ -2,11 +2,16 @@ package com.loanagent.agent
 
 import android.app.Activity
 import android.app.AlertDialog
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.provider.Settings
 import android.view.View
+import android.view.ViewGroup
 import android.widget.Button
 import android.widget.EditText
 import android.widget.LinearLayout
@@ -14,7 +19,12 @@ import android.widget.ScrollView
 import android.widget.TextView
 
 class AgentStatusActivity : Activity() {
-    private lateinit var status: TextView
+    private lateinit var identityCard: TextView
+    private lateinit var connectionCard: TextView
+    private lateinit var keepAliveCard: LinearLayout
+    private lateinit var readinessLine: TextView
+    private lateinit var diagnosticsPanel: LinearLayout
+    private lateinit var diagnosticsToggle: Button
     private lateinit var output: TextView
     private lateinit var selectorInput: EditText
     private lateinit var textInput: EditText
@@ -23,6 +33,15 @@ class AgentStatusActivity : Activity() {
     private lateinit var postconditionInput: EditText
     private val requestGate = SingleFlightRequestGate()
     private var destroyed = false
+    private var diagnosticsExpanded = false
+    private val uiHandler = Handler(Looper.getMainLooper())
+    private val refreshTicker = object : Runnable {
+        override fun run() {
+            if (destroyed) return
+            refreshHome()
+            uiHandler.postDelayed(this, 2_500L)
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -32,7 +51,7 @@ class AgentStatusActivity : Activity() {
             startDebugKeepAliveIfPresent()
         }
         setContentView(buildUi())
-        refreshStatus()
+        refreshHome()
     }
 
     private fun startDebugKeepAliveIfPresent() {
@@ -47,17 +66,42 @@ class AgentStatusActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
-        if (::status.isInitialized) refreshStatus()
+        if (::identityCard.isInitialized) refreshHome()
+        uiHandler.removeCallbacks(refreshTicker)
+        uiHandler.post(refreshTicker)
+    }
+
+    override fun onPause() {
+        uiHandler.removeCallbacks(refreshTicker)
+        super.onPause()
     }
 
     override fun onDestroy() {
         destroyed = true
+        uiHandler.removeCallbacks(refreshTicker)
         requestGate.destroy()
         super.onDestroy()
     }
 
     private fun buildUi(): View {
-        status = TextView(this).apply { textSize = 16f }
+        identityCard = TextView(this).apply {
+            textSize = 15f
+            setPadding(0, 8, 0, 8)
+            setTextIsSelectable(true)
+        }
+        connectionCard = TextView(this).apply {
+            textSize = 14f
+            setPadding(0, 8, 0, 8)
+            setTextIsSelectable(true)
+        }
+        keepAliveCard = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(0, 8, 0, 8)
+        }
+        readinessLine = TextView(this).apply {
+            textSize = 14f
+            setPadding(0, 4, 0, 12)
+        }
         output = TextView(this).apply {
             id = DiagnosticIds.OUTPUT
             setTextIsSelectable(true)
@@ -87,19 +131,13 @@ class AgentStatusActivity : Activity() {
             id = DiagnosticIds.POSTCONDITION
             hint = "可选 postcondition: disappears | appears | pageChange:HOME"
         }
-        val content = LinearLayout(this).apply {
+        diagnosticsPanel = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(32, 48, 32, 48)
+            visibility = View.GONE
             addView(TextView(context).apply {
-                text = "矩阵助手"
-                textSize = 20f
+                text = "高级诊断（仅单次、用户触发）"
+                textSize = 13f
             })
-            addView(TextView(context).apply {
-                text = "M0 无障碍执行器诊断（仅单次、用户触发）"
-                textSize = 14f
-            })
-            addView(status)
-            button("刷新状态") { refreshStatus() }
             button("打开系统无障碍设置") {
                 startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
             }
@@ -164,7 +202,57 @@ class AgentStatusActivity : Activity() {
             })
             addView(output)
         }
+        diagnosticsToggle = Button(this).apply {
+            text = "高级诊断 ▾"
+            setOnClickListener {
+                diagnosticsExpanded = !diagnosticsExpanded
+                diagnosticsPanel.visibility = if (diagnosticsExpanded) View.VISIBLE else View.GONE
+                text = if (diagnosticsExpanded) "高级诊断 ▴" else "高级诊断 ▾"
+            }
+        }
+        val content = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(32, 48, 32, 48)
+            addView(TextView(context).apply {
+                text = "矩阵助手"
+                textSize = 22f
+            })
+            addView(TextView(context).apply {
+                text = "设备健康 · 熄屏保活 · 云端连接"
+                textSize = 13f
+                setTextColor(0xFF666666.toInt())
+            })
+            sectionTitle("身份")
+            addView(identityCard)
+            button("复制设备 ID") { copyDeviceId() }
+            sectionTitle("连接")
+            addView(connectionCard)
+            sectionTitle("熄屏保活检查")
+            addView(keepAliveCard)
+            sectionTitle("执行就绪")
+            addView(readinessLine)
+            button("刷新本页状态") { refreshHome() }
+            addView(TextView(context).apply {
+                text = "刷新：重读身份/连接/保活检查（心跳由后台约 30s 自动更新）"
+                textSize = 12f
+                setTextColor(0xFF888888.toInt())
+                setPadding(0, 0, 0, 8)
+            })
+            addView(diagnosticsToggle)
+            addView(diagnosticsPanel)
+        }
         return ScrollView(this).apply { addView(content) }
+    }
+
+    private fun LinearLayout.sectionTitle(label: String) {
+        addView(
+            TextView(context).apply {
+                text = label
+                textSize = 16f
+                setPadding(0, 16, 0, 4)
+                setTypeface(typeface, android.graphics.Typeface.BOLD)
+            },
+        )
     }
 
     private fun LinearLayout.button(label: String, action: () -> Unit): Button =
@@ -174,29 +262,241 @@ class AgentStatusActivity : Activity() {
             addView(this)
         }
 
-    private fun refreshStatus() {
+    private fun refreshHome() {
         val snap = SupportedDeviceGate.snapshotFromBuild()
         val supported = SupportedDeviceGate.isSupported(snap)
-        val ime = M0InputMethodService.status(this)
-        val controller = controllerProvider()
         val deviceId = DeviceIdentityStore.deviceId(this)
-        status.text = buildString {
-            append("\n应用版本: ${BuildConfig.VERSION_NAME} (code ${BuildConfig.VERSION_CODE})")
-            if (!supported) {
-                append("\n\n⚠ 设备不受支持\n")
+        val bridge = CloudBridgeStatusHub.get()
+        val env = AndroidKeepAliveEnvironment(this) { controllerProvider() != null }
+        env.syncOemBatteryAckWithSystem()
+        val checker = KeepAliveHealthChecker(env)
+        val issues = checker.issues()
+
+        if (!supported) {
+            identityCard.text = buildString {
+                append("⚠ 设备不受支持\n")
                 append(SupportedDeviceGate.unsupportedMessage(snap))
-                append("\n\n已阻止云端心跳与任务通道。\n")
-                return@buildString
+                append("\n\n已阻止云端心跳与任务通道。")
             }
-            append("\n设备型号: ${SupportedDeviceGate.REQUIRED_LABEL}（已通过）")
-            append("\n本机: ${snap.summaryLine()}")
-            append("\n设备 ID: $deviceId")
-            append("\n无障碍: ${if (controller != null) "ENABLED" else "DISABLED"}")
-            append("\nIME: enabled=${ime.enabled}, selected=${ime.selected}")
-            append("\n前台租约: ${controller?.currentLease() ?: "NONE"}")
-            append("\n恢复记录: ${AgentRecoveryStore(this@AgentStatusActivity).status()}\n")
-            append("\n说明: 打开本页并保持运行后，云端「设备」页会出现此设备，可新建账号并绑定。\n")
+            connectionCard.text = "—"
+            keepAliveCard.removeAllViews()
+            keepAliveCard.addView(TextView(this).apply { text = "—" })
+            readinessLine.text = "—"
+            return
         }
+
+        // Drop legacy bad parse of JSON null → "null"
+        val rawName = bridge.deviceDisplayName?.trim()
+            ?.takeUnless { it.isEmpty() || it.equals("null", ignoreCase = true) }
+        val displayName = rawName ?: "未命名（请到 Ops「设备」页改名）"
+        val bound = bridge.boundAccount
+        identityCard.text = buildString {
+            append("显示名: $displayName\n")
+            append("设备 ID: $deviceId\n")
+            if (bound == null) {
+                append("绑定账号: 未绑定\n")
+            } else {
+                val name = bound.displayName
+                    ?.trim()
+                    ?.takeUnless { it.isEmpty() || it.equals("null", ignoreCase = true) }
+                    ?: bound.accountId
+                append("绑定账号: $name\n")
+                append("账号 ID: ${bound.accountId}\n")
+                append("角色: ${bound.role} · 状态: ${bound.status}\n")
+            }
+            append("版本: ${BuildConfig.VERSION_NAME} (code ${BuildConfig.VERSION_CODE})\n")
+            append("本机: ${snap.summaryLine()}")
+            bridge.geoLabel
+                ?.trim()
+                ?.takeUnless { it.isEmpty() || it.equals("null", ignoreCase = true) }
+                ?.let { append("\n地区: $it") }
+        }
+
+        connectionCard.text = buildConnectionText(bridge, env)
+
+        keepAliveCard.removeAllViews()
+        if (issues.isEmpty()) {
+            keepAliveCard.addView(
+                TextView(this).apply {
+                    text = "✓ 熄屏保活检查通过"
+                    setTextColor(0xFF1B7F3A.toInt())
+                    textSize = 15f
+                },
+            )
+        } else {
+            keepAliveCard.addView(
+                TextView(this).apply {
+                    text = "下列问题需处理（每项下方有跳转按钮）："
+                    textSize = 13f
+                    setPadding(0, 0, 0, 6)
+                },
+            )
+            issues.forEach { issue ->
+                keepAliveCard.addView(
+                    TextView(this).apply {
+                        text = "⚠ ${issue.message}"
+                        setTextColor(0xFFB00020.toInt())
+                        textSize = 14f
+                        setPadding(0, 8, 0, 2)
+                    },
+                )
+                addIssueActionButtons(keepAliveCard, issue, env)
+            }
+        }
+        keepAliveCard.addView(
+            TextView(this).apply {
+                text = "说明: 自启动等厂商项请用 ops/m0/keep-alive-screen-check.sh 核对"
+                textSize = 12f
+                setTextColor(0xFF888888.toInt())
+                setPadding(0, 8, 0, 0)
+            },
+        )
+        readinessLine.text = checker.screenLine()
+    }
+
+    private fun addIssueActionButtons(
+        parent: LinearLayout,
+        issue: KeepAliveIssue,
+        env: AndroidKeepAliveEnvironment,
+    ) {
+        fun addBtn(action: SettingsAction) {
+            if (action == SettingsAction.NONE) return
+            parent.addView(
+                Button(this).apply {
+                    text = actionLabel(action)
+                    setOnClickListener {
+                        openSettings(action, env)
+                        refreshHome()
+                    }
+                    layoutParams = LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.WRAP_CONTENT,
+                    )
+                },
+            )
+        }
+        addBtn(issue.settingsAction)
+        addBtn(issue.secondaryAction)
+        if (issue.code == "BATTERY_OPTIMIZED" &&
+            !env.ignoringBatteryOptimizations() &&
+            !env.oemBatteryUnrestrictedAcked()
+        ) {
+            addBtn(SettingsAction.ACK_OEM_BATTERY_UNRESTRICTED)
+        }
+    }
+
+    private fun buildConnectionText(
+        bridge: CloudBridgeSnapshot,
+        env: KeepAliveEnvironment,
+    ): String {
+        if (!BuildConfig.DEBUG) {
+            return "本构建无云桥（Release）"
+        }
+        val bridgeLine = if (env.cloudBridgeRunning() || bridge.bridgeRunning) {
+            "云桥服务: 运行中"
+        } else {
+            "云桥服务: 未运行"
+        }
+        val hb = when {
+            bridge.lastHeartbeatOk == true && bridge.lastHeartbeatAtMs != null -> {
+                val ago = ((System.currentTimeMillis() - bridge.lastHeartbeatAtMs) / 1000).coerceAtLeast(0)
+                "最近心跳: 成功 · ${ago}s 前"
+            }
+            bridge.lastHeartbeatOk == false ->
+                "最近心跳: 失败 · ${bridge.lastHeartbeatError ?: "unknown"}"
+            else -> "最近心跳: 尚无"
+        }
+        val server = when (bridge.lastHeartbeatOk) {
+            true -> "服务器: 可达"
+            false -> "服务器: 不可达"
+            null -> "服务器: 未知"
+        }
+        val host = bridge.controlPlaneHost ?: "—"
+        val poll = when {
+            bridge.lastPollOk == true && bridge.lastPollAtMs != null -> {
+                val ago = ((System.currentTimeMillis() - bridge.lastPollAtMs) / 1000).coerceAtLeast(0)
+                "HTTP 拉令: 正常 · ${ago}s 前"
+            }
+            bridge.lastPollOk == false -> "HTTP 拉令: 失败 · ${bridge.lastPollError ?: "unknown"}"
+            else -> "HTTP 拉令: 尚无"
+        }
+        val mqtt = when (bridge.mqttConnected) {
+            true -> "MQTT: 已连接（非主通道）"
+            false -> "MQTT: 未连接（非主通道，HTTP 通即可）"
+            null -> "MQTT: 未知（非主通道）"
+        }
+        val net = when {
+            bridge.wifiConnected == true -> "网络: Wi‑Fi"
+            bridge.cellularOk == true -> "网络: 蜂窝"
+            bridge.wifiConnected == false && bridge.cellularOk == false -> "网络: 无有效上报"
+            else -> "网络: 探测中"
+        }
+        return listOf(bridgeLine, hb, server, "控制面: $host", poll, mqtt, net).joinToString("\n")
+    }
+
+    private fun actionLabel(action: SettingsAction): String = when (action) {
+        SettingsAction.ACCESSIBILITY -> "去开启无障碍"
+        SettingsAction.INPUT_METHOD -> "去设置输入法（启用并选中 Loanagent）"
+        SettingsAction.BATTERY_OPTIMIZATION -> "去允许忽略电池优化"
+        SettingsAction.APP_BATTERY_DETAILS -> "打开应用详情（设耗电/无限制）"
+        SettingsAction.ACK_OEM_BATTERY_UNRESTRICTED -> "已设为无限制（清除本提示）"
+        SettingsAction.LOCK_SCREEN_SECURITY -> "去改锁屏（无密码/上滑）"
+        SettingsAction.START_CLOUD_BRIDGE -> "启动云桥"
+        SettingsAction.NONE -> "—"
+    }
+
+    private fun openSettings(action: SettingsAction, env: AndroidKeepAliveEnvironment? = null) {
+        when (action) {
+            SettingsAction.ACCESSIBILITY ->
+                startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+            SettingsAction.INPUT_METHOD ->
+                startActivity(Intent(Settings.ACTION_INPUT_METHOD_SETTINGS))
+            SettingsAction.BATTERY_OPTIMIZATION -> {
+                val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                    data = Uri.parse("package:$packageName")
+                }
+                try {
+                    startActivity(intent)
+                } catch (_: Exception) {
+                    startActivity(
+                        Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS),
+                    )
+                }
+            }
+            SettingsAction.APP_BATTERY_DETAILS -> {
+                startActivity(
+                    Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                        data = Uri.parse("package:$packageName")
+                    },
+                )
+            }
+            SettingsAction.ACK_OEM_BATTERY_UNRESTRICTED -> {
+                env?.ackOemBatteryUnrestricted()
+            }
+            SettingsAction.LOCK_SCREEN_SECURITY -> {
+                val intents = listOf(
+                    Intent(Settings.ACTION_SECURITY_SETTINGS),
+                    Intent(Settings.ACTION_SETTINGS),
+                )
+                for (intent in intents) {
+                    if (intent.resolveActivity(packageManager) != null) {
+                        startActivity(intent)
+                        return
+                    }
+                }
+            }
+            SettingsAction.START_CLOUD_BRIDGE -> {
+                startDebugKeepAliveIfPresent()
+            }
+            SettingsAction.NONE -> Unit
+        }
+    }
+
+    private fun copyDeviceId() {
+        val id = DeviceIdentityStore.deviceId(this)
+        val clipboard = getSystemService(ClipboardManager::class.java)
+        clipboard?.setPrimaryClip(ClipData.newPlainText("device_id", id))
+        output.text = "COPIED_DEVICE_ID:$id"
     }
 
     private fun launchXhs() {
@@ -291,7 +591,7 @@ class AgentStatusActivity : Activity() {
             runOnUiThread {
                 finishRequest(token) {
                     output.text = "wait=${result.status};checks=${result.checks};elapsedMs=${result.elapsedMs}"
-                    refreshStatus()
+                    refreshHome()
                 }
             }
         }
@@ -345,7 +645,7 @@ class AgentStatusActivity : Activity() {
                 finishRequest(token) {
                     output.text = "status=${result.status};stage=${result.stage};action=${result.action};" +
                         "path=${result.path};fallback=${result.fallbackUsed};message=${result.message}"
-                    refreshStatus()
+                    refreshHome()
                 }
             }
         }

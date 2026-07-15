@@ -17,6 +17,7 @@ class HeartbeatClient(
     private val openConnection: (String) -> HttpURLConnection = { url ->
         (URL(url).openConnection() as HttpURLConnection)
     },
+    private val nowMs: () -> Long = { System.currentTimeMillis() },
 ) : CloudNetworkClient {
     private val activeConnection = AtomicReference<HttpURLConnection?>()
     private val closed = AtomicBoolean(false)
@@ -44,6 +45,8 @@ class HeartbeatClient(
             url = CloudBridgeConfig.heartbeatUrl(),
             body = body.toString(),
             headers = mapOf("X-Device-Token" to CloudBridgeConfig.DEVICE_TOKEN),
+            wifiConnected = wifiConnected,
+            cellularOk = cellularOk,
         )
     }
 
@@ -51,6 +54,8 @@ class HeartbeatClient(
         url: String,
         body: String,
         headers: Map<String, String>,
+        wifiConnected: Boolean?,
+        cellularOk: Boolean?,
     ): Boolean {
         val connection = openConnection(url)
         activeConnection.set(connection)
@@ -70,8 +75,52 @@ class HeartbeatClient(
                 out.write(body.toByteArray(Charsets.UTF_8))
                 out.flush()
             }
-            connection.responseCode in 200..299
-        } catch (_: Exception) {
+            val code = connection.responseCode
+            if (code !in 200..299) {
+                val err = "HTTP $code"
+                CloudBridgeStatusHub.update {
+                    it.copy(
+                        lastHeartbeatAtMs = nowMs(),
+                        lastHeartbeatOk = false,
+                        lastHeartbeatError = err,
+                        wifiConnected = wifiConnected ?: it.wifiConnected,
+                        cellularOk = cellularOk ?: it.cellularOk,
+                        controlPlaneHost = CloudBridgeConfig.CONTROL_PLANE_BASE_URL,
+                    )
+                }
+                return false
+            }
+            val text = connection.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
+            val (displayName, geo, bound) = try {
+                CloudBridgeStatusParser.parseHeartbeatBody(text)
+            } catch (_: Exception) {
+                Triple(null, null, null)
+            }
+            CloudBridgeStatusHub.update {
+                it.copy(
+                    lastHeartbeatAtMs = nowMs(),
+                    lastHeartbeatOk = true,
+                    lastHeartbeatError = null,
+                    deviceDisplayName = displayName,
+                    geoLabel = geo ?: it.geoLabel,
+                    boundAccount = bound,
+                    wifiConnected = wifiConnected ?: it.wifiConnected,
+                    cellularOk = cellularOk ?: it.cellularOk,
+                    controlPlaneHost = CloudBridgeConfig.CONTROL_PLANE_BASE_URL,
+                )
+            }
+            true
+        } catch (error: Exception) {
+            CloudBridgeStatusHub.update {
+                it.copy(
+                    lastHeartbeatAtMs = nowMs(),
+                    lastHeartbeatOk = false,
+                    lastHeartbeatError = error.javaClass.simpleName,
+                    wifiConnected = wifiConnected ?: it.wifiConnected,
+                    cellularOk = cellularOk ?: it.cellularOk,
+                    controlPlaneHost = CloudBridgeConfig.CONTROL_PLANE_BASE_URL,
+                )
+            }
             false
         } finally {
             activeConnection.compareAndSet(connection, null)
@@ -226,6 +275,7 @@ class CommandPollClient(
     private val openConnection: (String) -> HttpURLConnection = { url ->
         (URL(url).openConnection() as HttpURLConnection)
     },
+    private val nowMs: () -> Long = { System.currentTimeMillis() },
 ) : CloudNetworkClient {
     private val activeConnection = AtomicReference<HttpURLConnection?>()
     private val closed = AtomicBoolean(false)
@@ -252,10 +302,24 @@ class CommandPollClient(
             val code = connection.responseCode
             if (code !in 200..299) {
                 Log.w(TAG, "command poll HTTP $code")
+                CloudBridgeStatusHub.update {
+                    it.copy(
+                        lastPollAtMs = nowMs(),
+                        lastPollOk = false,
+                        lastPollError = "HTTP $code",
+                    )
+                }
                 return emptyList()
             }
             val text = connection.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
             val array = org.json.JSONArray(text)
+            CloudBridgeStatusHub.update {
+                it.copy(
+                    lastPollAtMs = nowMs(),
+                    lastPollOk = true,
+                    lastPollError = null,
+                )
+            }
             buildList {
                 for (i in 0 until array.length()) {
                     add(array.getJSONObject(i).toString())
@@ -263,6 +327,13 @@ class CommandPollClient(
             }
         } catch (error: Exception) {
             Log.w(TAG, "command poll failed", error)
+            CloudBridgeStatusHub.update {
+                it.copy(
+                    lastPollAtMs = nowMs(),
+                    lastPollOk = false,
+                    lastPollError = error.javaClass.simpleName,
+                )
+            }
             emptyList()
         } finally {
             activeConnection.compareAndSet(connection, null)

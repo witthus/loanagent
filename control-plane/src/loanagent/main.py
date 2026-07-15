@@ -234,6 +234,7 @@ def heartbeat_device(
     background_tasks: BackgroundTasks,
 ) -> dict:
     repository: DeviceRepository = request.app.state.device_repository
+    accounts: AccountRepository = request.app.state.account_repository
     public_ip = extract_client_ip(request)
     # Never block the heartbeat path on upstream geo HTTP.
     geo_label = cached_geo_label(public_ip)
@@ -250,7 +251,19 @@ def heartbeat_device(
             device_id,
             public_ip,
         )
-    return asdict(record)
+    body = asdict(record)
+    bound = accounts.find_by_device_id(device_id)
+    body["bound_account"] = (
+        None
+        if bound is None
+        else {
+            "account_id": bound.account_id,
+            "display_name": bound.display_name,
+            "role": bound.role.value,
+            "status": bound.status,
+        }
+    )
+    return body
 
 
 def _refresh_device_geo_background(database_url: str, device_id: str, public_ip: str) -> None:
