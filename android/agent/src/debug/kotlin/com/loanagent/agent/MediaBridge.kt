@@ -13,6 +13,7 @@ import java.io.File
 import java.io.FileInputStream
 import java.net.HttpURLConnection
 import java.net.URL
+import java.util.concurrent.atomic.AtomicReference
 
 /**
  * Debug-only media prep: download signed URLs into MediaStore before publish_note.
@@ -20,6 +21,16 @@ import java.net.URL
  */
 object MediaBridge {
     private const val TAG = "MediaBridge"
+    private const val MAX_ATTEMPTS = 3
+    private const val RETRY_SLEEP_MS = 400L
+
+    private val lastError = AtomicReference<String?>(null)
+
+    fun lastErrorCode(): String? = lastError.get()
+
+    fun clearLastError() {
+        lastError.set(null)
+    }
 
     /**
      * @return updated params, unchanged params when no media_urls, or null on failure.
@@ -32,32 +43,52 @@ object MediaBridge {
             (URL(url).openConnection() as HttpURLConnection)
         },
     ): Map<String, Any?>? {
+        clearLastError()
         if (!params.containsKey("media_urls")) return params
-        val entries = parseMediaEntries(params["media_urls"]) ?: return null
+        val entries = parseMediaEntries(params["media_urls"])
+        if (entries == null) {
+            fail("MEDIA_MISSING", "media_urls parse failed")
+            return null
+        }
         if (entries.isEmpty()) return params
 
         return try {
             for ((index, entry) in entries.withIndex()) {
                 checkExecution(execution)
                 val url = entry.url
-                if (url.isBlank()) return null
-                val filename = entry.filename?.takeIf { it.isNotBlank() }
+                if (url.isBlank()) {
+                    fail("MEDIA_MISSING", "blank url at index=$index")
+                    return null
+                }
+                val baseName = entry.filename?.takeIf { it.isNotBlank() }
                     ?: defaultFilename(url, index)
-                val cacheFile = downloadToCache(context, url, filename, execution, openConnection)
-                    ?: return null
+                // Unique display names avoid MediaStore collisions across multi-image publishes.
+                val filename = "la_${index}_${System.currentTimeMillis()}_$baseName"
+                val cacheFile = downloadToCacheWithRetry(
+                    context,
+                    url,
+                    filename,
+                    index,
+                    entries.size,
+                    execution,
+                    openConnection,
+                ) ?: return null
                 try {
-                    if (!insertIntoMediaStore(context, cacheFile, filename, execution)) {
+                    if (!insertIntoMediaStoreWithRetry(context, cacheFile, filename, index, execution)) {
                         return null
                     }
                 } finally {
                     cacheFile.delete()
                 }
+                Log.i(TAG, "prepared index=$index/${entries.size} name=$filename")
             }
             checkExecution(execution)
+            clearLastError()
             mergePrepared(params)
         } catch (cancelled: TaskExecutionCancelledException) {
             throw cancelled
         } catch (error: Exception) {
+            fail("MEDIA_MISSING", "preparePublishParams failed: ${error.message}")
             Log.w(TAG, "preparePublishParams failed", error)
             null
         }
@@ -121,6 +152,30 @@ object MediaBridge {
         return path ?: "loanagent_media_$index.jpg"
     }
 
+    private fun downloadToCacheWithRetry(
+        context: Context,
+        url: String,
+        filename: String,
+        index: Int,
+        total: Int,
+        execution: TaskExecutionContext?,
+        openConnection: (String) -> HttpURLConnection,
+    ): File? {
+        var lastDetail = "unknown"
+        repeat(MAX_ATTEMPTS) { attempt ->
+            checkExecution(execution)
+            val file = downloadToCache(context, url, filename, execution, openConnection)
+            if (file != null) return file
+            lastDetail = "download failed index=$index/$total attempt=${attempt + 1}/$MAX_ATTEMPTS"
+            Log.w(TAG, lastDetail)
+            if (attempt < MAX_ATTEMPTS - 1) {
+                sleepRetry(execution)
+            }
+        }
+        fail("MEDIA_DOWNLOAD_FAILED", lastDetail)
+        return null
+    }
+
     private fun downloadToCache(
         context: Context,
         url: String,
@@ -132,8 +187,8 @@ object MediaBridge {
         val connection = openConnection(url)
         return try {
             connection.requestMethod = "GET"
-            connection.connectTimeout = boundedTimeout(execution, 15_000)
-            connection.readTimeout = boundedTimeout(execution, 30_000)
+            connection.connectTimeout = boundedTimeout(execution, 20_000)
+            connection.readTimeout = boundedTimeout(execution, 60_000)
             connection.instanceFollowRedirects = true
             val code = connection.responseCode
             checkExecution(execution)
@@ -148,7 +203,12 @@ object MediaBridge {
                     copyCooperatively(input, output, execution)
                 }
             }
-            if (!outFile.exists() || outFile.length() == 0L) null else outFile
+            if (!outFile.exists() || outFile.length() == 0L) {
+                Log.w(TAG, "download empty file for $url")
+                null
+            } else {
+                outFile
+            }
         } catch (cancelled: TaskExecutionCancelledException) {
             throw cancelled
         } catch (error: Exception) {
@@ -157,6 +217,25 @@ object MediaBridge {
         } finally {
             connection.disconnect()
         }
+    }
+
+    private fun insertIntoMediaStoreWithRetry(
+        context: Context,
+        file: File,
+        displayName: String,
+        index: Int,
+        execution: TaskExecutionContext?,
+    ): Boolean {
+        repeat(MAX_ATTEMPTS) { attempt ->
+            checkExecution(execution)
+            if (insertIntoMediaStore(context, file, displayName, execution)) return true
+            Log.w(TAG, "MediaStore insert failed index=$index attempt=${attempt + 1}/$MAX_ATTEMPTS")
+            if (attempt < MAX_ATTEMPTS - 1) {
+                sleepRetry(execution)
+            }
+        }
+        fail("MEDIA_STORE_FAILED", "MediaStore insert failed index=$index name=$displayName")
+        return false
     }
 
     private fun insertIntoMediaStore(
@@ -185,14 +264,21 @@ object MediaBridge {
             @Suppress("DEPRECATION")
             MediaStore.Images.Media.EXTERNAL_CONTENT_URI
         }
-        val uri: Uri = resolver.insert(collection, values) ?: return false
+        val uri: Uri = resolver.insert(collection, values) ?: run {
+            Log.w(TAG, "MediaStore insert returned null for $displayName")
+            return false
+        }
         return try {
             checkExecution(execution)
             resolver.openOutputStream(uri)?.use { output ->
                 FileInputStream(file).use { input ->
                     copyCooperatively(input, output, execution)
                 }
-            } ?: return false
+            } ?: run {
+                Log.w(TAG, "MediaStore openOutputStream null for $displayName")
+                resolver.delete(uri, null, null)
+                return false
+            }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 checkExecution(execution)
                 values.clear()
@@ -231,10 +317,27 @@ object MediaBridge {
         }
     }
 
+    private fun sleepRetry(execution: TaskExecutionContext?) {
+        checkExecution(execution)
+        try {
+            Thread.sleep(RETRY_SLEEP_MS)
+        } catch (_: InterruptedException) {
+            Thread.currentThread().interrupt()
+            throw InterruptedException("media preparation interrupted")
+        }
+        checkExecution(execution)
+    }
+
     private fun boundedTimeout(execution: TaskExecutionContext?, maximumMs: Int): Int {
         val remaining = execution?.remainingMillis() ?: return maximumMs
         execution.check()
-        return remaining.coerceIn(1, maximumMs.toLong()).toInt()
+        // Keep a usable floor so multi-image prep is not starved by a near-deadline clock.
+        return remaining.coerceIn(5_000L, maximumMs.toLong()).toInt()
+    }
+
+    private fun fail(code: String, detail: String) {
+        lastError.set(code)
+        Log.w(TAG, "$code: $detail")
     }
 
     private fun guessMime(filename: String): String {

@@ -20,16 +20,19 @@ class PublishNotePlaybook : Playbook {
             is NavResult.Failed -> return PlaybookResult.failed(taskId, nav.errorCode)
             NavResult.Ok -> Unit
         }
+        XhsOverlayDismiss.dismiss(runtime)
 
         val startInEditor = command.boolParam("start_in_editor")
         if (!startInEditor) {
             // Comments / inbox sync often leave XHS on note-detail; publish sheet only opens from
             // the main tab chrome. Back out to home before tapping the center publish tab.
             resetToHomeFeed(runtime)
+            XhsOverlayDismiss.dismiss(runtime)
             if (!openPublishEntry(runtime)) {
                 return PlaybookResult.failed(taskId, "PUBLISH_ENTRY_FAILED")
             }
             runtime.sleep(700)
+            XhsOverlayDismiss.dismiss(runtime)
             // Prefer geometric tap — a11y click on sheet rows is unreliable on HyperOS.
             val albumOpened =
                 tapLabeled(runtime, "从相册选择") ||
@@ -41,7 +44,7 @@ class PublishNotePlaybook : Playbook {
             }
             // Wait once for picker + MediaStore refresh (was 2s + 1.5s + 1s).
             runtime.sleep(1_200)
-            // Dismiss permission prompts if present.
+            // Permission prompts only — do not tap album chrome "关闭".
             runtime.click("text=允许", allowFinal = false, timeoutMs = 1_500) ||
                 runtime.click("text=始终允许", allowFinal = false, timeoutMs = 1_500) ||
                 runtime.click("text=仅使用期间允许", allowFinal = false, timeoutMs = 1_500)
@@ -56,6 +59,7 @@ class PublishNotePlaybook : Playbook {
             runtime.sleep(400)
             var rounds = 0
             while (rounds < 6 && !editorReady(runtime)) {
+                XhsOverlayDismiss.dismiss(runtime, rounds = 1)
                 val advanced = advancePublishWizard(runtime)
                 if (!advanced) break
                 runtime.sleep(1_000)
@@ -63,6 +67,7 @@ class PublishNotePlaybook : Playbook {
             }
         }
 
+        XhsOverlayDismiss.dismiss(runtime)
         if (!fillPublishField(runtime, TITLE_HINTS, title, editableIndex = 0)) {
             return PlaybookResult.failed(
                 taskId,
@@ -78,6 +83,7 @@ class PublishNotePlaybook : Playbook {
             return PlaybookResult.failed(taskId, "SET_TEXT_FAILED")
         }
         runtime.sleep(300)
+        XhsOverlayDismiss.dismiss(runtime)
         runtime.beginSideEffect()
         if (!runtime.click("text=发布笔记", allowFinal = true, timeoutMs = 12_000)) {
             return PlaybookResult.failed(taskId, "FINAL_ACTION_BLOCKED")

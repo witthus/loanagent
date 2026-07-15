@@ -184,7 +184,7 @@ class TaskCommandDispatcher(
                 command = original
                 result = PlaybookResult.failed(
                     original.taskId,
-                    "MEDIA_MISSING",
+                    MediaBridge.lastErrorCode() ?: "MEDIA_MISSING",
                 )
             } else {
                 command = original.copy(params = preparedParams)

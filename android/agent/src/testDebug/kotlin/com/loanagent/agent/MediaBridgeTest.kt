@@ -2,18 +2,77 @@ package com.loanagent.agent
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
 import org.robolectric.annotation.Config
+import java.io.ByteArrayInputStream
+import java.net.HttpURLConnection
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [35])
 class MediaBridgeTest {
+    @Test
+    fun downloadRetriesThenSucceedsAndClearsLastError() {
+        val context = RuntimeEnvironment.getApplication()
+        MediaBridge.clearLastError()
+        val attempts = AtomicInteger()
+        val jpeg = byteArrayOf(
+            0xFF.toByte(), 0xD8.toByte(), 0xFF.toByte(), 0xD9.toByte(),
+        )
+        val result = MediaBridge.preparePublishParams(
+            context,
+            mapOf(
+                "title" to "T",
+                "body" to "B",
+                "media_urls" to listOf(mapOf("url" to "http://example.test/a.jpg", "filename" to "a.jpg")),
+            ),
+        ) {
+            val n = attempts.incrementAndGet()
+            object : HttpURLConnection(java.net.URL(it)) {
+                override fun connect() = Unit
+                override fun disconnect() = Unit
+                override fun usingProxy(): Boolean = false
+                override fun getResponseCode(): Int = if (n == 1) 503 else 200
+                override fun getInputStream() = ByteArrayInputStream(jpeg)
+            }
+        }
+        assertNotNull(result)
+        assertEquals(true, result!!["media_prepared"])
+        assertTrue(attempts.get() >= 2)
+        assertNull(MediaBridge.lastErrorCode())
+    }
+
+    @Test
+    fun downloadHttpFailureSetsMediaDownloadFailed() {
+        val context = RuntimeEnvironment.getApplication()
+        MediaBridge.clearLastError()
+        val result = MediaBridge.preparePublishParams(
+            context,
+            mapOf(
+                "title" to "T",
+                "body" to "B",
+                "media_urls" to listOf(mapOf("url" to "http://example.test/missing.jpg")),
+            ),
+        ) {
+            object : HttpURLConnection(java.net.URL(it)) {
+                override fun connect() = Unit
+                override fun disconnect() = Unit
+                override fun usingProxy(): Boolean = false
+                override fun getResponseCode(): Int = 404
+                override fun getInputStream() = ByteArrayInputStream(ByteArray(0))
+            }
+        }
+        assertNull(result)
+        assertEquals("MEDIA_DOWNLOAD_FAILED", MediaBridge.lastErrorCode())
+    }
+
     @Test
     fun missingMediaUrlsIsNoOp() {
         val context = RuntimeEnvironment.getApplication()

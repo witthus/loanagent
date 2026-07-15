@@ -120,6 +120,16 @@ const MAP: Record<string, HumanMessage> = {
     detail: '图片可能还没下载完，或点选位置不准确。',
     nextStep: '稍后重试；仍失败请换一张图或检查手机存储权限。',
   },
+  MEDIA_DOWNLOAD_FAILED: {
+    title: '下载图片失败',
+    detail: '设备从云端拉取媒体时失败（已自动重试）。',
+    nextStep: '检查手机能否访问控制面；看设备 logcat MediaBridge 明细后重试。',
+  },
+  MEDIA_STORE_FAILED: {
+    title: '图片写入系统相册失败',
+    detail: '下载成功但无法写入 MediaStore。',
+    nextStep: '检查存储权限后重试；仍失败请清相册缓存或重启 Agent。',
+  },
   FINAL_ACTION_BLOCKED: {
     title: '最后一步点「发布」失败了',
     detail: '内容可能已填好，但发布按钮未点中或被拦截。',
