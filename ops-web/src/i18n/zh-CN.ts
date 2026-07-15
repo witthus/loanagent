@@ -11,6 +11,7 @@ export const zhCN = {
     engagement: '互动链',
     accounts: '账号',
     devices: '设备',
+    upgrades: '远程升级',
     tasks: '任务',
     alerts: '异常',
     help: '遇到问题怎么办',

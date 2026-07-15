@@ -40,9 +40,11 @@ Copy this section once for each device.
 | Reboot recovery | Reboot from power menu and wait for `sys.boot_completed=1` | Boot timestamp plus Device Controller “Last recovery” | NOT_RUN | |
 | Boot auto-start | Verify the DPC receives boot and requests Agent recovery | DPC status and Agent process/heartbeat evidence | NOT_RUN | |
 | Lock screen | Lock, wait 5 minutes, unlock through the approved device SOP | Lock state, recovery outcome, no policy bypass | NOT_RUN | |
+| Keyguard disabled | After DO policy apply, confirm keyguard disabled; screen off ≥5 min then dispatch publish | DPC policy applied includes KEYGUARD_DISABLED; task succeeds without `SCREEN_NOT_READY` | NOT_RUN | |
 | Background launch | Put Agent in background, trigger an allowed recovery, repeat after screen-off | Result on this ROM; any Android/OEM restriction recorded | NOT_RUN | |
 | Fresh Agent install | Use signed update manifest and trusted HTTPS artifact | PackageInstaller `SUCCESS`, expected SHA-256/version | NOT_RUN | |
 | Agent upgrade | Upgrade baseline to the designated M0 version | Old/new versions and PackageInstaller result | NOT_RUN | |
+| Remote upgrade poll | Ops Devices 「推送升级」 to enrolled device_id + ring; DPC poll or “Check remote Agent upgrade” | `device_agent_upgrades` → succeeded; Agent versionCode increased | NOT_RUN | |
 | Rollback decision | Offer a lower semantic version without authorization | DPC records `REJECT_ROLLBACK` | NOT_RUN | |
 | Rollback attempt | Explicitly authorize an artifact containing the previous business version, rebuilt with a versionCode higher than the installed APK | Decision plus real PackageInstaller/ROM result; a lower-versionCode platform rejection is recorded, never hidden | NOT_RUN | |
 | Post-reboot Agent | Reboot after install/upgrade and repeat recovery check | Agent version and heartbeat after reboot | NOT_RUN | |
@@ -122,6 +124,51 @@ previous business version with a `versionCode` greater than the currently instal
 it with the same app signing key. If a lower-versionCode APK is intentionally tested, its
 PackageInstaller platform failure is the required result and must not be reported as a successful
 rollback.
+
+## Pilot day SOP (1–2 devices)
+
+1. Factory-reset the pilot phone; stay on the welcome screen (no Xiaomi/Google login).
+2. Generate offline QR (`loanagent.enrollment issue` + `loanagent.provisioning`) with HTTPS
+   `CONTROL_PLANE_URL`, `UPDATE_MANIFEST_URL`, and signing checksums.
+3. Welcome screen → tap ~6 times → scan QR → fully managed provisioning.
+4. Verify: `adb shell dpm list-owners` shows `com.loanagent.devicecontroller`; Device Controller
+   UI shows Device Owner, enrolled `device_id`, and policy apply includes `KEYGUARD_DISABLED`.
+5. Install Agent (same signing cert), enable accessibility once, log into XHS, bind account in ops.
+6. **Wake gate:** turn screen off ≥5 minutes → dispatch `publish_note` from ops → must succeed
+   without `SCREEN_NOT_READY`.
+7. **Remote upgrade gate:** publish signed ring manifest → Ops 「推送升级」 using **enrolled**
+   `device_id` (not Agent `dev-…` if different) → DPC “Check remote Agent upgrade” or wait for
+   JobScheduler (~15 min) → Agent version rises → reboot → Agent recovers.
+
+HyperOS notes: first APK install may need user confirmation before DO; accessibility cannot be
+enabled silently; do not `force-stop` Agent (clears a11y). Physical access to a keyguard-disabled
+phone is unrestricted — keep matrix phones under physical control.
+
+## Fleet rollout SOP (after dual-device PASS)
+
+1. Both pilot models: Keyguard disabled + dark-screen publish + remote upgrade + reboot recovery
+   all `PASS`.
+2. Schedule factory resets for remaining matrix phones; repeat Pilot day SOP per device.
+3. Keep non-DO sideload phones only as temporary controls; prefer DO enrolled ids for upgrades.
+4. Set `HTTPS_PUBLIC_BASE_URL` on the control-plane to the public HTTPS origin used in manifests.
+5. Record fleet `GO` only when checklist Go/No-Go rule is met.
+
+## Signed update-manifest publish (DO path)
+
+Sideload `latest.json` / `/downloads/agent-latest.apk` is **not** the DO channel.
+
+1. Build Agent APK with rising `versionCode`, same enterprise signing cert as DPC.
+2. Produce JSON matching `schemas/update-manifest.schema.json` and attach ECDSA-P256 signature
+   (`signature.value` DER base64) per canonical bytes documented above.
+3. Host APK on the trusted update HTTPS host; publish manifest:
+
+```bash
+ops/m0/publish-update-manifest.sh canary /path/to/signed-canary.json
+```
+
+4. Serve via `/downloads/update-manifests/{ring}.json` (mount `UPDATE_MANIFEST_DIR` or copy into
+   agent-releases/update-manifests on the server).
+5. Ops Devices → 「推送升级」 → ring; DPC polls `GET /api/v1/devices/{enrolled_id}/upgrade`.
 
 ## Deliverable debug APKs
 

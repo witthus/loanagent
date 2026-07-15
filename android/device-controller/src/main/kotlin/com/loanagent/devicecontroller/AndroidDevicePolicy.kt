@@ -23,6 +23,9 @@ class AndroidPolicyCapabilities(private val context: Context) {
             PackageManager.FEATURE_DEVICE_ADMIN,
         ),
         keepScreenOn = true,
+        keyguardDisabled = context.packageManager.hasSystemFeature(
+            PackageManager.FEATURE_DEVICE_ADMIN,
+        ),
     )
 }
 
@@ -40,4 +43,10 @@ class AndroidDevicePolicyGateway(context: Context) : DevicePolicyGateway {
 
     override fun isLockTaskPermitted(packageName: String): Boolean =
         manager.isLockTaskPermitted(packageName)
+
+    override fun setKeyguardDisabled(disabled: Boolean) {
+        if (!manager.setKeyguardDisabled(admin, disabled)) {
+            error("setKeyguardDisabled($disabled) returned false")
+        }
+    }
 }

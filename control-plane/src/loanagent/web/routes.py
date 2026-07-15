@@ -85,6 +85,7 @@ def legacy_ops_pages(path: str, request: Request) -> Response:
         return redirect
     mapping = {
         "devices": "/devices",
+        "upgrades": "/upgrades",
         "accounts": "/accounts",
         "tasks": "/tasks",
         "content": "/contents",

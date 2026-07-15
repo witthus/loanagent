@@ -8,6 +8,17 @@ export type FleetAccount = AccountLike & {
   device_id?: string | null
 }
 
+export type AgentUpgradeStatus = {
+  device_id?: string
+  status?: string | null
+  ring?: string | null
+  manifest_url?: string | null
+  detail?: string | null
+  pending?: boolean
+  requested_at?: string | null
+  updated_at?: string | null
+}
+
 export type FleetDevice = {
   device_id: string
   online?: boolean
@@ -21,6 +32,7 @@ export type FleetDevice = {
   model?: string | null
   public_ip?: string | null
   geo_label?: string | null
+  agent_upgrade?: AgentUpgradeStatus | null
 }
 
 export type AccountHealth =

@@ -4,6 +4,7 @@
         android:protectionLevel="signature" />
 
     <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="com.loanagent.permission.RECOVER_AGENT" />
 
@@ -67,5 +68,10 @@
         <receiver
             android:name=".InstallResultReceiver"
             android:exported="false" />
+
+        <service
+            android:name=".UpgradePollJobService"
+            android:exported="false"
+            android:permission="android.permission.BIND_JOB_SERVICE" />
     </application>
 </manifest>

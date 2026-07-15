@@ -9,6 +9,21 @@ class BootCompletedReceiver : BroadcastReceiver() {
         val store = ControllerStore(context)
         val installAction = AndroidInstallReconciler(context).reconcile(store)
         val ownerState = AndroidDeviceOwnerState(context).read()
+        if (ownerState.isThisAppDeviceOwner) {
+            runCatching {
+                val detected = AndroidPolicyCapabilities(context).read()
+                PolicyCoordinator(AndroidDevicePolicyGateway(context)).applyMinimumPolicy(
+                    ownerState = ownerState,
+                    capabilities = detected.copy(
+                        maximumTimeToLock = false,
+                        keepScreenOn = true,
+                    ),
+                    agentPackage = ManagementActivity.AGENT_PACKAGE,
+                )
+            }
+            UpgradePollScheduler.schedule(context)
+            UpgradePollScheduler.runNow(context)
+        }
         val recovery = AgentRecoveryCapability(context)
         val action = BootRecoveryDecisionEngine().decide(
             isDeviceOwner = ownerState.isThisAppDeviceOwner,

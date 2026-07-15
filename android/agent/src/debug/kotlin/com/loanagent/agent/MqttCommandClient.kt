@@ -108,7 +108,7 @@ class MqttCommandClient(
             return
         }
         try {
-            sock.soTimeout = 45_000
+            sock.soTimeout = mqttSocketTimeoutMs(KEEP_ALIVE_SEC)
             sock.connect(
                 InetSocketAddress(CloudBridgeConfig.MQTT_HOST, CloudBridgeConfig.MQTT_PORT),
                 10_000,
@@ -186,7 +186,7 @@ class MqttCommandClient(
         writeMqttString(data, "MQTT")
         data.writeByte(4) // protocol level 3.1.1
         data.writeByte(0x02) // clean session
-        data.writeShort(30) // keep alive
+        data.writeShort(KEEP_ALIVE_SEC) // keep alive
         writeMqttString(data, clientId)
         return buf.toByteArray()
     }
@@ -256,5 +256,17 @@ class MqttCommandClient(
 
     companion object {
         private const val TAG = "CloudMqtt"
+
+        /** MQTT CONNECT Keep Alive (seconds). Broker kills idle clients after 1.5× this. */
+        const val KEEP_ALIVE_SEC = 60
+
+        /**
+         * Idle socket read timeout that triggers PINGREQ.
+         * Must stay strictly below keepalive × 1.5 so we ping before the broker disconnects.
+         */
+        internal fun mqttSocketTimeoutMs(keepAliveSec: Int): Int {
+            require(keepAliveSec > 0)
+            return (keepAliveSec * 1000 / 3).coerceIn(5_000, 30_000)
+        }
     }
 }

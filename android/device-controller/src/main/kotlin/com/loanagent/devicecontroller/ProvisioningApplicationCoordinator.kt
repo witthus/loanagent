@@ -57,6 +57,12 @@ object ProvisioningApplicationCoordinator {
         }.getOrElse {
             ComplianceResult(ComplianceStatus.SERVER_FAILED)
         }
+        if (result.isCompliant) {
+            runCatching {
+                store.saveEnrolledDeviceId(AndroidEnrollmentIdentity(context).read().deviceId)
+            }
+            UpgradePollScheduler.schedule(context)
+        }
         finish(store, result, result.diagnostic)
     }
 

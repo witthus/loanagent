@@ -9,9 +9,11 @@ from pathlib import Path
 
 
 DEFAULT_APK_NAME = "agent-latest.apk"
+DEFAULT_DPC_APK_NAME = "device-controller-latest.apk"
 DEFAULT_MANIFEST_NAME = "latest.json"
 DEFAULT_GUIDE_PDF_NAME = "device-bind-guide.pdf"
 DEFAULT_GUIDE_DOWNLOAD_PATH = "/downloads/device-bind-guide.pdf"
+DEFAULT_DPC_DOWNLOAD_PATH = "/downloads/device-controller-latest.apk"
 
 
 @dataclass(frozen=True)
@@ -90,6 +92,13 @@ def load_latest_release() -> AgentRelease:
 
 def resolve_apk_path() -> Path:
     path = agent_release_dir() / DEFAULT_APK_NAME
+    if not path.is_file():
+        raise AgentReleaseNotFoundError(str(path))
+    return path
+
+
+def resolve_dpc_apk_path() -> Path:
+    path = agent_release_dir() / DEFAULT_DPC_APK_NAME
     if not path.is_file():
         raise AgentReleaseNotFoundError(str(path))
     return path

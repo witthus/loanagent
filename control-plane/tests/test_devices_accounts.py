@@ -549,3 +549,131 @@ def test_cancel_task_route_stops_executing_task() -> None:
         )
         assert again.status_code == 409
         assert again.json()["detail"]["code"] == "TASK_ALREADY_TERMINAL"
+
+
+def test_delete_unbound_offline_device_removes_device_and_tasks() -> None:
+    from loanagent.devices import DeviceNotFoundError, DeviceRepository
+    from loanagent.tasks import TaskService
+
+    class RecordingMqttBus:
+        def publish(self, topic: str, payload: dict) -> None:
+            return None
+
+    device_id = unique_id("device-del")
+    account_id = unique_id("account-del-unbind")
+    DeviceRepository(DATABASE_URL).migrate()
+    DeviceRepository(DATABASE_URL).heartbeat(
+        device_id=device_id,
+        agent_version="0.1.5",
+        a11y_bound=True,
+    )
+
+    with TestClient(app) as client:
+        client.post(
+            "/api/v1/accounts",
+            headers=ops_headers(),
+            json={
+                "account_id": account_id,
+                "role": AccountRole.PUBLISHER_MATRIX.value,
+                "device_id": device_id,
+                "display_name": "临时绑定",
+            },
+        )
+        service = TaskService(DATABASE_URL, RecordingMqttBus())
+        task = service._insert_queued_task(
+            task_id=unique_id("task-del"),
+            operation_id=unique_id("op-del"),
+            device_id=device_id,
+            account_id=account_id,
+            playbook="sync_notes@1.0",
+            params={},
+            effect_class="readonly",
+            priority=100,
+            timeout_sec=120,
+            source="manual",
+        )
+        unbound = client.patch(
+            f"/api/v1/accounts/{account_id}",
+            headers=ops_headers(),
+            json={"device_id": None},
+        )
+        assert unbound.status_code == 200
+        DeviceRepository(DATABASE_URL).patch(device_id, online=False)
+
+        denied = client.delete(f"/api/v1/devices/{device_id}")
+        assert denied.status_code in {401, 403}
+
+        deleted = client.delete(
+            f"/api/v1/devices/{device_id}",
+            headers=ops_headers(),
+        )
+        assert deleted.status_code == 200
+        assert deleted.json() == {"ok": True, "device_id": device_id}
+
+        listed = client.get("/api/v1/devices", headers=ops_headers())
+        assert device_id not in {row["device_id"] for row in listed.json()}
+
+        missing = client.delete(
+            f"/api/v1/devices/{device_id}",
+            headers=ops_headers(),
+        )
+        assert missing.status_code == 404
+        assert missing.json()["detail"]["code"] == "DEVICE_NOT_FOUND"
+
+    with pytest.raises(DeviceNotFoundError):
+        DeviceRepository(DATABASE_URL).get(device_id)
+    with psycopg.connect(DATABASE_URL) as connection:
+        remaining = connection.execute(
+            "SELECT COUNT(*) FROM tasks WHERE task_id = %s OR device_id = %s",
+            (task.task_id, device_id),
+        ).fetchone()
+    assert remaining is not None
+    assert remaining[0] == 0
+
+
+def test_delete_device_rejects_online_or_bound() -> None:
+    from loanagent.devices import DeviceRepository
+
+    online_id = unique_id("device-del-online")
+    bound_id = unique_id("device-del-bound")
+    account_id = unique_id("account-del-bound")
+    DeviceRepository(DATABASE_URL).migrate()
+    DeviceRepository(DATABASE_URL).heartbeat(
+        device_id=online_id,
+        agent_version="0.1.5",
+        a11y_bound=True,
+    )
+    DeviceRepository(DATABASE_URL).heartbeat(
+        device_id=bound_id,
+        agent_version="0.1.5",
+        a11y_bound=True,
+    )
+    DeviceRepository(DATABASE_URL).patch(bound_id, online=False)
+
+    with TestClient(app) as client:
+        online_denied = client.delete(
+            f"/api/v1/devices/{online_id}",
+            headers=ops_headers(),
+        )
+        assert online_denied.status_code == 409
+        assert online_denied.json()["detail"]["code"] == "DEVICE_STILL_ONLINE"
+
+        client.post(
+            "/api/v1/accounts",
+            headers=ops_headers(),
+            json={
+                "account_id": account_id,
+                "role": AccountRole.PUBLISHER_MATRIX.value,
+                "device_id": bound_id,
+                "display_name": "已绑定机",
+            },
+        )
+        bound_denied = client.delete(
+            f"/api/v1/devices/{bound_id}",
+            headers=ops_headers(),
+        )
+        assert bound_denied.status_code == 409
+        assert bound_denied.json()["detail"]["code"] == "DEVICE_BOUND"
+
+        assert DeviceRepository(DATABASE_URL).get(online_id).device_id == online_id
+        assert DeviceRepository(DATABASE_URL).get(bound_id).device_id == bound_id

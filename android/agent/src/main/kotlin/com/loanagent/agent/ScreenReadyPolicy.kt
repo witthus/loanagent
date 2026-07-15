@@ -2,7 +2,9 @@ package com.loanagent.agent
 
 /**
  * Pure policy for screen / keyguard readiness (no Android framework calls).
- * Secure (PIN/pattern/password) locks are never auto-dismissed without MDM.
+ * Secure (PIN/pattern/password) locks that are currently locked are never
+ * auto-dismissed without Device Owner keyguard disable.
+ * After DO setKeyguardDisabled, runtime typically reports unlocked → wake only.
  */
 object ScreenReadyPolicy {
     const val ERROR_SECURE_OR_FAILED = "SCREEN_NOT_READY"

@@ -104,6 +104,27 @@ class ControllerStore(context: Context) {
     fun lastEnrollment(): String =
         preferences.getString(KEY_LAST_ENROLLMENT, "NOT_RUN") ?: "NOT_RUN"
 
+    fun saveEnrolledDeviceId(deviceId: String) {
+        if (deviceId.isBlank()) return
+        preferences.edit().putString(KEY_ENROLLED_DEVICE_ID, deviceId).apply()
+    }
+
+    fun enrolledDeviceId(): String? =
+        preferences.getString(KEY_ENROLLED_DEVICE_ID, null)?.takeIf { it.isNotBlank() }
+
+    fun controlPlaneBaseUrl(): String? =
+        preferences.getString(KEY_CONTROL_PLANE_URL, null)?.takeIf { it.isNotBlank() }
+
+    fun trustedControlPlaneHost(): String? =
+        preferences.getString(KEY_TRUSTED_CONTROL_PLANE_HOST, null)?.takeIf { it.isNotBlank() }
+
+    fun recordUpgradePoll(status: String) {
+        preferences.edit().putString(KEY_LAST_UPGRADE_POLL, status).apply()
+    }
+
+    fun lastUpgradePoll(): String =
+        preferences.getString(KEY_LAST_UPGRADE_POLL, "NOT_RUN") ?: "NOT_RUN"
+
     fun recordRecovery(status: String) {
         preferences.edit().putString(KEY_LAST_RECOVERY, status).apply()
     }
@@ -192,6 +213,8 @@ class ControllerStore(context: Context) {
         const val KEY_LAST_INSTALL = "last_install"
         const val KEY_INSTALL_IN_PROGRESS = "install_in_progress"
         const val KEY_LAST_ENROLLMENT = "last_enrollment"
+        const val KEY_ENROLLED_DEVICE_ID = "enrolled_device_id"
+        const val KEY_LAST_UPGRADE_POLL = "last_upgrade_poll"
         const val KEY_PROVISIONING_RUN_STATE = "provisioning_run_state"
         const val KEY_PROVISIONING_DIAGNOSTIC = "provisioning_diagnostic"
         const val KEY_INSTALL_SESSION_ID = "install_session_id"

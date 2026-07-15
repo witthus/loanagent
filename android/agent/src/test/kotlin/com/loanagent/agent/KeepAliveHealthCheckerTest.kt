@@ -16,6 +16,7 @@ class KeepAliveHealthCheckerTest {
         val issues = KeepAliveHealthChecker(
             FakeEnv(
                 keyguardSecure = true,
+                keyguardLocked = true,
                 ignoringBattery = false,
                 bridgeRunning = false,
             ),
@@ -27,6 +28,14 @@ class KeepAliveHealthCheckerTest {
         val battery = issues.first { it.code == "BATTERY_OPTIMIZED" }
         assertEquals(SettingsAction.BATTERY_OPTIMIZATION, battery.settingsAction)
         assertEquals(SettingsAction.APP_BATTERY_DETAILS, battery.secondaryAction)
+    }
+
+    @Test
+    fun secureCredentialWithoutLockDoesNotWarnWhenDoDisabledKeyguard() {
+        val issues = KeepAliveHealthChecker(
+            FakeEnv(keyguardSecure = true, keyguardLocked = false),
+        ).issues()
+        assertTrue(issues.none { it.code == "SECURE_KEYGUARD" })
     }
 
     @Test
@@ -54,6 +63,24 @@ class KeepAliveHealthCheckerTest {
         assertTrue(line.contains("熄屏"))
         assertTrue(line.contains("上滑"))
         assertTrue(line.contains("未安装小红书"))
+        assertTrue(line.contains("相册权限: 未装小红书"))
+    }
+
+    @Test
+    fun xhsPhotoDeniedWhenInstalledWithoutGrant() {
+        val issues = KeepAliveHealthChecker(
+            FakeEnv(xhsInstalled = true, xhsPhoto = false),
+        ).issues()
+        val photo = issues.first { it.code == "XHS_PHOTO_DENIED" }
+        assertEquals(SettingsAction.XHS_APP_DETAILS, photo.settingsAction)
+    }
+
+    @Test
+    fun noPhotoIssueWhenXhsMissing() {
+        val issues = KeepAliveHealthChecker(
+            FakeEnv(xhsInstalled = false, xhsPhoto = false),
+        ).issues()
+        assertTrue(issues.none { it.code == "XHS_PHOTO_DENIED" })
     }
 
     private class FakeEnv(
@@ -65,6 +92,7 @@ class KeepAliveHealthCheckerTest {
         private val keyguardSecure: Boolean = false,
         private val bridgeRunning: Boolean = true,
         private val xhsInstalled: Boolean = true,
+        private val xhsPhoto: Boolean = true,
         private val interactive: Boolean = true,
         private val keyguardLocked: Boolean = false,
         private val hasBridge: Boolean = true,
@@ -77,6 +105,7 @@ class KeepAliveHealthCheckerTest {
         override fun keyguardSecure() = keyguardSecure
         override fun cloudBridgeRunning() = bridgeRunning
         override fun xhsInstalled() = xhsInstalled
+        override fun xhsPhotoAccessGranted() = xhsPhoto
         override fun screenInteractive() = interactive
         override fun keyguardLocked() = keyguardLocked
         override fun hasCloudBridgeBuild() = hasBridge

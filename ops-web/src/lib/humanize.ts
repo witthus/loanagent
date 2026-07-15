@@ -130,6 +130,11 @@ const MAP: Record<string, HumanMessage> = {
     detail: '下载成功但无法写入 MediaStore。',
     nextStep: '检查存储权限后重试；仍失败请清相册缓存或重启 Agent。',
   },
+  AGENT_UPGRADE_PENDING: {
+    title: 'Agent 升级已排队',
+    detail: '控制面已标记 Device Owner 设备待升级，等待 DPC 拉取签名 manifest。',
+    nextStep: '在 Device Controller 点「Check remote Agent upgrade」，或等待约 15 分钟轮询。',
+  },
   FINAL_ACTION_BLOCKED: {
     title: '最后一步点「发布」失败了',
     detail: '内容可能已填好，但发布按钮未点中或被拦截。',

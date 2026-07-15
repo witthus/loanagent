@@ -27,25 +27,10 @@ type Account = {
   platform?: string
 }
 
-type AgentRelease = {
-  available: boolean
-  filename: string
-  download_path: string
-  version_name?: string | null
-  version_code?: number | null
-  sha256?: string | null
-  built_at?: string | null
-  byte_size?: number | null
-  missing_reason?: string | null
-  guide_available?: boolean
-  guide_download_path?: string | null
-}
-
 type FilterKey = 'all' | 'online' | 'offline' | 'unbound' | 'outdated' | 'a11y'
 
 const devices = ref<Device[]>([])
 const accounts = ref<Account[]>([])
-const agentRelease = ref<AgentRelease | null>(null)
 const error = ref('')
 const message = ref('')
 const saving = ref<string | null>(null)
@@ -152,32 +137,10 @@ const filteredDevices = computed(() => {
   })
 })
 
-const agentDownloadUrl = computed(() => {
-  if (!agentRelease.value?.available) return ''
-  return agentRelease.value.download_path || '/downloads/agent-latest.apk'
-})
-
-const guideDownloadUrl = computed(() => {
-  if (!agentRelease.value?.guide_available) return ''
-  return agentRelease.value.guide_download_path || '/downloads/device-bind-guide.pdf'
-})
-
-const agentSizeLabel = computed(() => {
-  const bytes = agentRelease.value?.byte_size
-  if (!bytes) return '—'
-  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
-})
-
 const canCreateBind = computed(() => {
   const device = unboundDevices.value.find((d) => d.device_id === createForDeviceId.value)
   return Boolean(device && device.online !== false)
 })
-
-function shortSha(value: string | null | undefined): string {
-  if (!value) return '—'
-  return value.slice(0, 12)
-}
 
 function a11yLabel(device: Device): string {
   if (device.a11y_bound === true) return '已就绪'
@@ -193,15 +156,13 @@ async function load() {
   const generation = ++loadGeneration
   error.value = ''
   try {
-    const [deviceRows, accountRows, release] = await Promise.all([
+    const [deviceRows, accountRows] = await Promise.all([
       api<Device[]>('/api/v1/devices'),
       api<Account[]>('/api/v1/accounts?platform=xhs'),
-      api<AgentRelease>('/api/v1/agent/latest').catch(() => null),
     ])
     if (generation !== loadGeneration) return
     devices.value = deviceRows
     accounts.value = accountRows
-    agentRelease.value = release
     if (!bindAccountId.value && unboundAccounts.value[0]) {
       bindAccountId.value = unboundAccounts.value[0].account_id
     }
@@ -238,6 +199,37 @@ async function renameDevice(device: Device) {
     await load()
   } catch (err) {
     error.value = formatApiError(err, '更新设备名称失败')
+  } finally {
+    saving.value = null
+  }
+}
+
+async function deleteUnboundDevice(device: Device) {
+  if (device.online !== false) {
+    error.value = '设备仍在线，请先停止手机上的矩阵助手，等其离线后再删除'
+    return
+  }
+  const name = deviceDisplayName(device)
+  if (
+    !window.confirm(
+      `删除设备「${name}」（${device.device_id}）？\n将移除该设备及关联任务，不可恢复。`,
+    )
+  ) {
+    return
+  }
+  saving.value = `delete:${device.device_id}`
+  message.value = ''
+  error.value = ''
+  try {
+    await api(`/api/v1/devices/${encodeURIComponent(device.device_id)}`, {
+      method: 'DELETE',
+    })
+    message.value = '设备已删除'
+    if (bindDeviceId.value === device.device_id) bindDeviceId.value = ''
+    if (createForDeviceId.value === device.device_id) createForDeviceId.value = ''
+    await load()
+  } catch (err) {
+    error.value = formatApiError(err, '删除设备失败')
   } finally {
     saving.value = null
   }
@@ -407,29 +399,10 @@ onUnmounted(() => {
     <p v-if="message" class="ok">{{ message }}</p>
     <p v-if="error" class="error">{{ error }}</p>
 
-    <div class="agent-panel">
-      <h2>安装矩阵助手 Agent</h2>
-      <template v-if="agentRelease?.available">
-        <p class="agent-meta">
-          版本 {{ agentRelease.version_name || '—' }}
-          · {{ agentSizeLabel }}
-          · 构建 {{ formatDateTime(agentRelease.built_at) }}
-          · SHA {{ shortSha(agentRelease.sha256) }}
-        </p>
-        <a class="download" :href="agentDownloadUrl" download="matrix-assistant-agent.apk">
-          下载最新 Agent APK
-        </a>
-        <p class="muted">须用 0.1.2+；仅支持 Redmi Note 12 Turbo。</p>
-      </template>
-      <p v-else class="warn">
-        {{ agentRelease?.missing_reason || '服务器尚未发布 Agent APK。' }}
-      </p>
-      <p v-if="guideDownloadUrl" class="guide-row">
-        <a class="guide-link" :href="guideDownloadUrl" download="矩阵助手-新设备绑定安装指引.pdf">
-          下载新设备绑定安装指引（PDF）
-        </a>
-      </p>
-    </div>
+    <p class="hint-upgrade">
+      Agent APK 下载、签名 manifest 发布与远程推送已移至
+      <router-link to="/upgrades">远程升级</router-link>。
+    </p>
 
     <div class="bind-panel pending">
       <h2>待绑定设备</h2>
@@ -447,6 +420,7 @@ onUnmounted(() => {
               <th>心跳</th>
               <th>Agent</th>
               <th>提示</th>
+              <th>操作</th>
             </tr>
           </thead>
           <tbody>
@@ -468,6 +442,18 @@ onUnmounted(() => {
               <td :title="formatDateTime(d.last_seen_at)">{{ relativeHeartbeat(d.last_seen_at) }}</td>
               <td>{{ d.agent_version || '—' }}</td>
               <td class="warn">{{ deviceRowWarning(d) || '—' }}</td>
+              <td>
+                <button
+                  v-if="d.online === false"
+                  type="button"
+                  class="danger"
+                  :disabled="saving === `delete:${d.device_id}`"
+                  @click="deleteUnboundDevice(d)"
+                >
+                  {{ saving === `delete:${d.device_id}` ? '删除中…' : '删除' }}
+                </button>
+                <span v-else class="muted">在线不可删</span>
+              </td>
             </tr>
           </tbody>
         </table>
@@ -573,7 +559,12 @@ onUnmounted(() => {
             <td :title="formatDateTime(device.last_seen_at)">
               {{ relativeHeartbeat(device.last_seen_at) }}
             </td>
-            <td>{{ device.agent_version || '—' }}</td>
+            <td>
+              <div>{{ device.agent_version || '—' }}</div>
+              <div v-if="device.agent_upgrade?.status" class="muted">
+                <router-link to="/upgrades">升级: {{ device.agent_upgrade.status }}</router-link>
+              </div>
+            </td>
             <td>
               <template v-if="accountsByDevice.get(device.device_id)">
                 <div>{{ accountDisplayName(accountsByDevice.get(device.device_id)!) }}</div>
@@ -624,6 +615,16 @@ onUnmounted(() => {
                 <div>
                   <span class="label">最近心跳</span>
                   {{ formatDateTime(device.last_seen_at) }}
+                </div>
+                <div>
+                  <span class="label">Agent 升级</span>
+                  <template v-if="device.agent_upgrade">
+                    {{ device.agent_upgrade.status || '—' }}
+                    <span v-if="device.agent_upgrade.detail" class="muted">
+                      · {{ device.agent_upgrade.detail }}
+                    </span>
+                  </template>
+                  <span v-else>—</span>
                 </div>
                 <div>
                   <span class="label">账号状态</span>
@@ -691,7 +692,11 @@ h1 { margin: 0 0 8px; }
 .error { color: #b42318; }
 .warn { color: #b54708; }
 .muted { color: #5c6770; font-size: 0.85rem; margin-top: 4px; }
-.agent-panel,
+.hint-upgrade {
+  margin: 0 0 14px;
+  color: #5c6770;
+}
+.hint-upgrade a { color: #175cd3; font-weight: 600; }
 .bind-panel {
   background: #fff;
   border-radius: 12px;
@@ -699,28 +704,8 @@ h1 { margin: 0 0 8px; }
   margin-bottom: 16px;
 }
 .bind-panel.pending { border: 1px solid #fdba74; }
-.agent-panel h2,
 .bind-panel h2 { margin: 0 0 12px; font-size: 1rem; }
 .bind-panel h3 { margin: 8px 0 12px; font-size: 0.95rem; }
-.agent-meta { margin: 0 0 10px; color: #344054; font-weight: 600; }
-.download {
-  display: inline-block;
-  background: #2d6a4f;
-  color: #fff;
-  text-decoration: none;
-  font-weight: 600;
-  padding: 10px 14px;
-  border-radius: 8px;
-  margin: 4px 0 8px;
-}
-.guide-row { margin: 8px 0 0; }
-.guide-link {
-  color: #175cd3;
-  font-size: 13px;
-  font-weight: 600;
-  text-decoration: none;
-}
-.guide-link:hover { text-decoration: underline; }
 .bind-row {
   display: flex;
   flex-wrap: wrap;
@@ -766,6 +751,20 @@ td {
 }
 th { background: #f3f4f6; }
 table.mini { margin-bottom: 14px; }
+table.mini button.danger {
+  border: 1px solid #fecdca;
+  background: #fff;
+  color: #b42318;
+  border-radius: 8px;
+  padding: 6px 10px;
+  cursor: pointer;
+  font: inherit;
+  font-weight: 600;
+}
+table.mini button.danger:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
 tr.highlight { background: #fff7ed; }
 tr.dim { opacity: 0.78; }
 tr.detail td { background: #f8fafc; }

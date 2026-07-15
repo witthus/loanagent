@@ -23,6 +23,7 @@ class AgentStatusActivity : Activity() {
     private lateinit var connectionCard: TextView
     private lateinit var keepAliveCard: LinearLayout
     private lateinit var readinessLine: TextView
+    private lateinit var mediaSelfCheckResult: TextView
     private lateinit var diagnosticsPanel: LinearLayout
     private lateinit var diagnosticsToggle: Button
     private lateinit var output: TextView
@@ -34,6 +35,7 @@ class AgentStatusActivity : Activity() {
     private val requestGate = SingleFlightRequestGate()
     private var destroyed = false
     private var diagnosticsExpanded = false
+    private var mediaSelfCheckBusy = false
     private val uiHandler = Handler(Looper.getMainLooper())
     private val refreshTicker = object : Runnable {
         override fun run() {
@@ -100,7 +102,12 @@ class AgentStatusActivity : Activity() {
         }
         readinessLine = TextView(this).apply {
             textSize = 14f
-            setPadding(0, 4, 0, 12)
+            setPadding(0, 4, 0, 8)
+        }
+        mediaSelfCheckResult = TextView(this).apply {
+            textSize = 13f
+            setPadding(0, 4, 0, 8)
+            setTextIsSelectable(true)
         }
         output = TextView(this).apply {
             id = DiagnosticIds.OUTPUT
@@ -231,6 +238,17 @@ class AgentStatusActivity : Activity() {
             addView(keepAliveCard)
             sectionTitle("执行就绪")
             addView(readinessLine)
+            addView(
+                TextView(context).apply {
+                    text =
+                        "云端发布图由矩阵助手写入系统相册 DCIM/Camera；小红书需开启照片/相册权限才能选到素材。"
+                    textSize = 12f
+                    setTextColor(0xFF666666.toInt())
+                    setPadding(0, 0, 0, 6)
+                },
+            )
+            button("发布素材自检") { runPublishMediaSelfCheck() }
+            addView(mediaSelfCheckResult)
             button("刷新本页状态") { refreshHome() }
             addView(TextView(context).apply {
                 text = "刷新：重读身份/连接/保活检查（心跳由后台约 30s 自动更新）"
@@ -345,13 +363,41 @@ class AgentStatusActivity : Activity() {
         }
         keepAliveCard.addView(
             TextView(this).apply {
-                text = "说明: 自启动等厂商项请用 ops/m0/keep-alive-screen-check.sh 核对"
+                text =
+                    "说明: 自启动等厂商项请用 ops/m0/keep-alive-screen-check.sh 核对；发布选图依赖上方小红书相册权限与「发布素材自检」"
                 textSize = 12f
                 setTextColor(0xFF888888.toInt())
                 setPadding(0, 8, 0, 0)
             },
         )
         readinessLine.text = checker.screenLine()
+    }
+
+    private fun runPublishMediaSelfCheck() {
+        if (mediaSelfCheckBusy) return
+        mediaSelfCheckBusy = true
+        mediaSelfCheckResult.text = "自检进行中…"
+        mediaSelfCheckResult.setTextColor(0xFF666666.toInt())
+        Thread {
+            val result = try {
+                PublishMediaSelfCheck.run(applicationContext)
+            } catch (error: Exception) {
+                PublishMediaSelfCheckResult(
+                    PublishMediaSelfCheckCode.WRITE_FAILED,
+                    "自检异常: ${error.message}",
+                )
+            }
+            runOnUiThread {
+                mediaSelfCheckBusy = false
+                if (destroyed) return@runOnUiThread
+                val ok = result.code == PublishMediaSelfCheckCode.OK
+                mediaSelfCheckResult.text = if (ok) "✓ ${result.message}" else "⚠ ${result.message}"
+                mediaSelfCheckResult.setTextColor(
+                    if (ok) 0xFF1B7F3A.toInt() else 0xFFB00020.toInt(),
+                )
+                refreshHome()
+            }
+        }.start()
     }
 
     private fun addIssueActionButtons(
@@ -442,6 +488,7 @@ class AgentStatusActivity : Activity() {
         SettingsAction.ACK_OEM_BATTERY_UNRESTRICTED -> "已设为无限制（清除本提示）"
         SettingsAction.LOCK_SCREEN_SECURITY -> "去改锁屏（无密码/上滑）"
         SettingsAction.START_CLOUD_BRIDGE -> "启动云桥"
+        SettingsAction.XHS_APP_DETAILS -> "去小红书权限（照片/相册）"
         SettingsAction.NONE -> "—"
     }
 
@@ -487,6 +534,13 @@ class AgentStatusActivity : Activity() {
             }
             SettingsAction.START_CLOUD_BRIDGE -> {
                 startDebugKeepAliveIfPresent()
+            }
+            SettingsAction.XHS_APP_DETAILS -> {
+                startActivity(
+                    Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                        data = Uri.parse("package:${XhsPhotoAccess.XHS_PACKAGE}")
+                    },
+                )
             }
             SettingsAction.NONE -> Unit
         }

@@ -23,13 +23,26 @@ from loanagent.agent_release import (
     AgentReleaseNotFoundError,
     load_latest_release,
     resolve_apk_path,
+    resolve_dpc_apk_path,
     resolve_guide_pdf_path,
 )
 from loanagent.auth import require_device, require_ops
 from loanagent.content import ContentRepository
 from loanagent.content_routes import router as content_router
 from loanagent.db import migrate_fleet_schema
-from loanagent.devices import DeviceNotFoundError, DeviceRepository
+from loanagent.device_upgrades import DeviceUpgradeRepository
+from loanagent.devices import (
+    DeviceBoundError,
+    DeviceNotFoundError,
+    DeviceRepository,
+    DeviceStillOnlineError,
+)
+from loanagent.update_manifest import (
+    DEFAULT_RINGS,
+    load_ring_manifest,
+    manifest_path_for_ring,
+    publish_signed_manifest,
+)
 from loanagent.engagement import EngagementService
 from loanagent.geo_ip import (
     begin_geo_refresh,
@@ -69,6 +82,7 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
     application.state.enrollment_repository = enrollment_repository
     application.state.device_repository = DeviceRepository(database_url)
     application.state.account_repository = AccountRepository(database_url)
+    application.state.device_upgrade_repository = DeviceUpgradeRepository(database_url)
     task_service = TaskService(
         database_url,
         MqttCommandBus(os.environ.get("MQTT_URL", "mqtt://localhost:1883")),
@@ -197,6 +211,14 @@ def enroll(payload: EnrollmentPayload, request: Request) -> dict[str, str]:
         EnrollmentConsumeStatus.CONSUMED,
         EnrollmentConsumeStatus.IDEMPOTENT_RETRY,
     }:
+        devices: DeviceRepository = request.app.state.device_repository
+        devices.create(
+            device_id=payload.device.device_id,
+            manufacturer=payload.device.manufacturer,
+            model=payload.device.model,
+            agent_version=None,
+            display_name=f"DO {payload.device.model}",
+        )
         status = (
             "enrolled" if result.status is EnrollmentConsumeStatus.CONSUMED else "already_enrolled"
         )
@@ -281,7 +303,30 @@ def _refresh_device_geo_background(database_url: str, device_id: str, public_ip:
 @app.get("/api/v1/devices", dependencies=[Depends(require_ops)])
 def list_devices(request: Request) -> list[dict]:
     repository: DeviceRepository = request.app.state.device_repository
-    return [asdict(device) for device in repository.list()]
+    upgrades: DeviceUpgradeRepository = request.app.state.device_upgrade_repository
+    out: list[dict] = []
+    for device in repository.list():
+        body = asdict(device)
+        upgrade = upgrades.get(device.device_id)
+        body["agent_upgrade"] = None if upgrade is None else upgrade.as_dict()
+        out.append(body)
+    return out
+
+
+@app.get("/api/v1/devices/{device_id}", dependencies=[Depends(require_ops)])
+def get_device(device_id: str, request: Request) -> dict:
+    repository: DeviceRepository = request.app.state.device_repository
+    upgrades: DeviceUpgradeRepository = request.app.state.device_upgrade_repository
+    try:
+        body = asdict(repository.get(device_id))
+    except DeviceNotFoundError as error:
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "DEVICE_NOT_FOUND", "message": "Device does not exist."},
+        ) from error
+    upgrade = upgrades.get(device_id)
+    body["agent_upgrade"] = None if upgrade is None else upgrade.as_dict()
+    return body
 
 
 class DevicePatchPayload(BaseModel):
@@ -291,18 +336,6 @@ class DevicePatchPayload(BaseModel):
     model: str | None = Field(default=None, min_length=1, max_length=128)
     online: bool | None = None
     display_name: str | None = Field(default=None, min_length=1, max_length=256)
-
-
-@app.get("/api/v1/devices/{device_id}", dependencies=[Depends(require_ops)])
-def get_device(device_id: str, request: Request) -> dict:
-    repository: DeviceRepository = request.app.state.device_repository
-    try:
-        return asdict(repository.get(device_id))
-    except DeviceNotFoundError as error:
-        raise HTTPException(
-            status_code=404,
-            detail={"code": "DEVICE_NOT_FOUND", "message": "Device does not exist."},
-        ) from error
 
 
 @app.patch("/api/v1/devices/{device_id}", dependencies=[Depends(require_ops)])
@@ -315,6 +348,35 @@ def patch_device(device_id: str, payload: DevicePatchPayload, request: Request) 
             status_code=404,
             detail={"code": "DEVICE_NOT_FOUND", "message": "Device does not exist."},
         ) from error
+
+
+@app.delete("/api/v1/devices/{device_id}", dependencies=[Depends(require_ops)])
+def delete_device(device_id: str, request: Request) -> dict:
+    repository: DeviceRepository = request.app.state.device_repository
+    try:
+        repository.delete_unbound_offline(device_id)
+    except DeviceNotFoundError as error:
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "DEVICE_NOT_FOUND", "message": "Device does not exist."},
+        ) from error
+    except DeviceBoundError as error:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "DEVICE_BOUND",
+                "message": "Device is bound to an account; unbind first.",
+            },
+        ) from error
+    except DeviceStillOnlineError as error:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "DEVICE_STILL_ONLINE",
+                "message": "Device is still online; stop the agent and wait until offline.",
+            },
+        ) from error
+    return {"ok": True, "device_id": device_id}
 
 
 @app.post("/api/v1/accounts", dependencies=[Depends(require_ops)])
@@ -438,6 +500,170 @@ def get_latest_agent_release() -> dict:
     return load_latest_release().as_public_dict()
 
 
+class DeviceUpgradeRequestPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    ring: str | None = Field(default=None, pattern="^(canary|staged|stable)$")
+    manifest_url: str | None = Field(default=None, min_length=12, max_length=2048)
+
+
+class DeviceUpgradeResultPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    status: str = Field(pattern="^(pending|in_progress|succeeded|failed)$")
+    detail: str | None = Field(default=None, max_length=2048)
+
+
+class PublishUpdateManifestPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    ring: str = Field(pattern="^(canary|staged|stable)$")
+    manifest: dict
+
+
+@app.get("/api/v1/update-manifests", dependencies=[Depends(require_ops)])
+def list_update_manifests() -> dict:
+    rings = [load_ring_manifest(ring).as_public_dict() for ring in DEFAULT_RINGS]
+    return {"rings": rings}
+
+
+@app.get("/api/v1/update-manifests/{ring}", dependencies=[Depends(require_ops)])
+def get_update_manifest_meta(ring: str) -> dict:
+    try:
+        return load_ring_manifest(ring).as_public_dict()
+    except ValueError as error:
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "INVALID_RING", "message": str(error)},
+        ) from error
+
+
+@app.post("/api/v1/update-manifests/{ring}", dependencies=[Depends(require_ops)])
+def publish_update_manifest(ring: str, payload: PublishUpdateManifestPayload) -> dict:
+    if payload.ring != ring:
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "RING_MISMATCH", "message": "Path ring must match body.ring."},
+        )
+    try:
+        return publish_signed_manifest(ring, payload.manifest).as_public_dict()
+    except ValueError as error:
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "INVALID_MANIFEST", "message": str(error)},
+        ) from error
+
+
+@app.get("/downloads/update-manifests/{ring}.json")
+def download_update_manifest(ring: str) -> FileResponse:
+    """Public signed update-manifest for Device Owner DPC downloads."""
+    try:
+        path = manifest_path_for_ring(ring)
+    except ValueError as error:
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "INVALID_RING", "message": str(error)},
+        ) from error
+    if not path.is_file():
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "MANIFEST_NOT_FOUND", "message": "Ring manifest not published."},
+        )
+    return FileResponse(
+        path,
+        media_type="application/json",
+        filename=f"{ring}.json",
+        content_disposition_type="inline",
+    )
+
+
+@app.get("/api/v1/devices/{device_id}/upgrade", dependencies=[Depends(require_device)])
+def get_device_upgrade(device_id: str, request: Request) -> dict | None:
+    upgrades: DeviceUpgradeRepository = request.app.state.device_upgrade_repository
+    pending = upgrades.pending_for_device(device_id)
+    if pending is None:
+        return {"pending": False, "device_id": device_id}
+    body = pending.as_dict()
+    body["pending"] = True
+    return body
+
+
+@app.get(
+    "/api/v1/devices/{device_id}/upgrade/status",
+    dependencies=[Depends(require_ops)],
+)
+def get_device_upgrade_status(device_id: str, request: Request) -> dict:
+    upgrades: DeviceUpgradeRepository = request.app.state.device_upgrade_repository
+    record = upgrades.get(device_id)
+    if record is None:
+        return {"device_id": device_id, "pending": False, "status": None}
+    return record.as_dict()
+
+
+@app.post(
+    "/api/v1/devices/{device_id}/upgrade",
+    dependencies=[Depends(require_ops)],
+)
+def request_device_upgrade(
+    device_id: str,
+    payload: DeviceUpgradeRequestPayload,
+    request: Request,
+) -> dict:
+    devices: DeviceRepository = request.app.state.device_repository
+    upgrades: DeviceUpgradeRepository = request.app.state.device_upgrade_repository
+    try:
+        devices.get(device_id)
+    except DeviceNotFoundError as error:
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "DEVICE_NOT_FOUND", "message": "Device does not exist."},
+        ) from error
+    public_base = os.environ.get("PUBLIC_BASE_URL", "").rstrip("/")
+    # Local compose uses http; DPC requires https in production. Prefer HTTPS_PUBLIC_BASE_URL.
+    https_base = os.environ.get("HTTPS_PUBLIC_BASE_URL", "").rstrip("/") or public_base
+    try:
+        record = upgrades.request_upgrade(
+            device_id,
+            ring=payload.ring,
+            manifest_url=payload.manifest_url,
+            public_base_url=https_base if payload.manifest_url is None else None,
+        )
+    except FileNotFoundError as error:
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "MANIFEST_NOT_FOUND", "message": str(error)},
+        ) from error
+    except ValueError as error:
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "INVALID_UPGRADE_REQUEST", "message": str(error)},
+        ) from error
+    return record.as_dict()
+
+
+@app.post(
+    "/api/v1/devices/{device_id}/upgrade/result",
+    dependencies=[Depends(require_device)],
+)
+def report_device_upgrade_result(
+    device_id: str,
+    payload: DeviceUpgradeResultPayload,
+    request: Request,
+) -> dict:
+    upgrades: DeviceUpgradeRepository = request.app.state.device_upgrade_repository
+    try:
+        return upgrades.report_result(
+            device_id,
+            status=payload.status,
+            detail=payload.detail,
+        ).as_dict()
+    except KeyError as error:
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "UPGRADE_NOT_FOUND", "message": "No upgrade row for device."},
+        ) from error
+
+
 @app.get("/downloads/agent-latest.apk")
 def download_latest_agent_apk() -> FileResponse:
     """Public APK download so phones can install without ops login.
@@ -456,6 +682,28 @@ def download_latest_agent_apk() -> FileResponse:
         path,
         media_type="application/vnd.android.package-archive",
         filename="matrix-assistant-agent.apk",
+        content_disposition_type="attachment",
+        headers={"X-Loanagent-Classification": "UNTRUSTED_DEBUG_TEST_ONLY"},
+    )
+
+
+@app.get("/downloads/device-controller-latest.apk")
+def download_latest_device_controller_apk() -> FileResponse:
+    """Public DPC APK for Device Owner QR enrollment download."""
+    try:
+        path = resolve_dpc_apk_path()
+    except AgentReleaseNotFoundError as error:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "code": "DPC_APK_NOT_FOUND",
+                "message": "Device Controller APK is not published.",
+            },
+        ) from error
+    return FileResponse(
+        path,
+        media_type="application/vnd.android.package-archive",
+        filename="loanagent-device-controller.apk",
         content_disposition_type="attachment",
         headers={"X-Loanagent-Classification": "UNTRUSTED_DEBUG_TEST_ONLY"},
     )

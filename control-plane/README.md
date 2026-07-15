@@ -25,6 +25,8 @@ running smoke checks outside the default Compose environment.
   online. Body fields are optional: `agent_version`, `wifi_connected`,
   `a11y_bound`, and `cellular_ok`.
 - `GET /api/v1/devices` lists heartbeat state for ops.
+- `DELETE /api/v1/devices/{device_id}` hard-deletes an unbound offline device
+  (and its tasks). Bound or online devices return 409.
 - `POST /api/v1/accounts` creates an account with `account_id`, `role`, optional
   `device_id`, and optional `display_name`.
 - `GET /api/v1/accounts` lists account bindings and role defaults.

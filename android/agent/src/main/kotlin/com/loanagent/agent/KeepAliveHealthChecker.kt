@@ -19,6 +19,7 @@ enum class SettingsAction {
     ACK_OEM_BATTERY_UNRESTRICTED,
     LOCK_SCREEN_SECURITY,
     START_CLOUD_BRIDGE,
+    XHS_APP_DETAILS,
     NONE,
 }
 
@@ -32,6 +33,8 @@ interface KeepAliveEnvironment {
     fun keyguardSecure(): Boolean
     fun cloudBridgeRunning(): Boolean
     fun xhsInstalled(): Boolean
+    /** False when XHS missing or photo/media read not granted. */
+    fun xhsPhotoAccessGranted(): Boolean
     fun screenInteractive(): Boolean
     fun keyguardLocked(): Boolean
     fun hasCloudBridgeBuild(): Boolean
@@ -66,10 +69,10 @@ class KeepAliveHealthChecker(
                 secondaryAction = SettingsAction.APP_BATTERY_DETAILS,
             )
         }
-        if (env.keyguardSecure()) {
+        if (env.keyguardSecure() && env.keyguardLocked()) {
             out += KeepAliveIssue(
                 code = "SECURE_KEYGUARD",
-                message = "锁屏有密码/图案，自动化无法解锁，请改为无密码或仅上滑",
+                message = "锁屏有密码/图案且当前已锁定，自动化无法解锁；矩阵机请用 DO 禁锁屏或改为无密码",
                 settingsAction = SettingsAction.LOCK_SCREEN_SECURITY,
             )
         }
@@ -80,17 +83,30 @@ class KeepAliveHealthChecker(
                 settingsAction = SettingsAction.START_CLOUD_BRIDGE,
             )
         }
+        if (env.xhsInstalled() && !env.xhsPhotoAccessGranted()) {
+            out += KeepAliveIssue(
+                code = "XHS_PHOTO_DENIED",
+                message = "小红书未授权照片/相册，发布选图会失败（云端图由矩阵助手写入 DCIM/Camera）",
+                settingsAction = SettingsAction.XHS_APP_DETAILS,
+            )
+        }
         return out
     }
 
     fun screenLine(): String {
         val lit = if (env.screenInteractive()) "亮屏" else "熄屏"
         val lock = when {
-            env.keyguardSecure() -> "有密码锁屏"
+            env.keyguardSecure() && env.keyguardLocked() -> "有密码锁屏中"
+            env.keyguardSecure() -> "有凭据·当前未锁"
             env.keyguardLocked() -> "上滑/无密码锁屏中"
             else -> "未锁屏"
         }
         val xhs = if (env.xhsInstalled()) "小红书已安装" else "未安装小红书"
-        return "$lit · $lock · $xhs"
+        val album = when {
+            !env.xhsInstalled() -> "相册权限: 未装小红书"
+            env.xhsPhotoAccessGranted() -> "相册权限: 已开"
+            else -> "相册权限: 未开"
+        }
+        return "$lit · $lock · $xhs · $album"
     }
 }

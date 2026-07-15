@@ -25,6 +25,7 @@ const router = createRouter({
         { path: 'engagement', name: 'engagement', component: () => import('@/views/EngagementView.vue'), meta: { title: '互动链' } },
         { path: 'accounts', name: 'accounts', component: () => import('@/views/AccountsView.vue'), meta: { title: '账号' } },
         { path: 'devices', name: 'devices', component: () => import('@/views/DevicesView.vue'), meta: { title: '设备' } },
+        { path: 'upgrades', name: 'upgrades', component: () => import('@/views/AgentUpgradesView.vue'), meta: { title: '远程升级' } },
         { path: 'tasks', name: 'tasks', component: () => import('@/views/TasksView.vue'), meta: { title: '任务' } },
         { path: 'alerts', name: 'alerts', component: () => import('@/views/AlertsView.vue'), meta: { title: '异常' } },
         { path: 'help', name: 'help', component: () => import('@/views/HelpView.vue'), meta: { title: '遇到问题怎么办' } },

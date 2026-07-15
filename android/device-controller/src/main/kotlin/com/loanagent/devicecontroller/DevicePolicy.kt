@@ -17,12 +17,14 @@ enum class PolicyCapability {
     LOCK_TASK,
     MAXIMUM_TIME_TO_LOCK,
     KEEP_SCREEN_ON,
+    KEYGUARD_DISABLED,
 }
 
 data class PolicyCapabilities(
     val lockTask: Boolean,
     val maximumTimeToLock: Boolean,
     val keepScreenOn: Boolean,
+    val keyguardDisabled: Boolean = true,
 )
 
 enum class PolicyStatus {
@@ -37,6 +39,7 @@ enum class PolicyError {
     VERIFY_LOCK_TASK_FAILED,
     LOCK_TASK_POSTCONDITION_FAILED,
     SET_MAXIMUM_TIME_TO_LOCK_FAILED,
+    SET_KEYGUARD_DISABLED_FAILED,
 }
 
 data class PolicyApplicationResult(
@@ -53,6 +56,8 @@ interface DevicePolicyGateway {
     fun setMaximumTimeToLock(milliseconds: Long)
 
     fun isLockTaskPermitted(packageName: String): Boolean
+
+    fun setKeyguardDisabled(disabled: Boolean)
 }
 
 class PolicyCoordinator(private val gateway: DevicePolicyGateway) {
@@ -75,12 +80,15 @@ class PolicyCoordinator(private val gateway: DevicePolicyGateway) {
         if (!capabilities.maximumTimeToLock) {
             unsupported += PolicyCapability.MAXIMUM_TIME_TO_LOCK
         }
+        if (!capabilities.keyguardDisabled) {
+            unsupported += PolicyCapability.KEYGUARD_DISABLED
+        }
         if (capabilities.keepScreenOn) {
             activityCapabilities += PolicyCapability.KEEP_SCREEN_ON
         } else {
             unsupported += PolicyCapability.KEEP_SCREEN_ON
         }
-        if (!capabilities.lockTask) {
+        if (!capabilities.lockTask || !capabilities.keyguardDisabled) {
             return PolicyApplicationResult(
                 status = PolicyStatus.FAILED,
                 error = PolicyError.REQUIRED_CAPABILITY_UNAVAILABLE,
@@ -122,6 +130,18 @@ class PolicyCoordinator(private val gateway: DevicePolicyGateway) {
                 }
             applied += PolicyCapability.MAXIMUM_TIME_TO_LOCK
         }
+
+        runCatching { gateway.setKeyguardDisabled(true) }
+            .getOrElse {
+                return PolicyApplicationResult(
+                    status = PolicyStatus.FAILED,
+                    error = PolicyError.SET_KEYGUARD_DISABLED_FAILED,
+                    applied = applied,
+                    unsupported = unsupported,
+                    availableToActivity = activityCapabilities,
+                )
+            }
+        applied += PolicyCapability.KEYGUARD_DISABLED
 
         return PolicyApplicationResult(
             status = PolicyStatus.APPLIED,

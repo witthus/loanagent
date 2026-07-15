@@ -21,6 +21,7 @@ const daily = [
 
 const system = [
   { to: '/devices', label: zhCN.nav.devices },
+  { to: '/upgrades', label: zhCN.nav.upgrades },
   { to: '/accounts', label: zhCN.nav.accounts },
   { to: '/tasks', label: zhCN.nav.tasks },
   { to: '/alerts', label: zhCN.nav.alerts },

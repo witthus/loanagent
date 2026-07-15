@@ -56,11 +56,14 @@ class AndroidKeepAliveEnvironment(
 
     override fun xhsInstalled(): Boolean =
         try {
-            context.packageManager.getPackageInfo("com.xingin.xhs", 0)
+            context.packageManager.getPackageInfo(XhsPhotoAccess.XHS_PACKAGE, 0)
             true
         } catch (_: PackageManager.NameNotFoundException) {
             false
         }
+
+    override fun xhsPhotoAccessGranted(): Boolean =
+        PublishMediaSelfCheck.xhsPhotoGranted(context)
 
     override fun screenInteractive(): Boolean {
         val power = context.getSystemService(PowerManager::class.java) ?: return false

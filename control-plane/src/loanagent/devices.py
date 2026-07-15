@@ -36,6 +36,14 @@ class DeviceNotFoundError(Exception):
     pass
 
 
+class DeviceBoundError(Exception):
+    pass
+
+
+class DeviceStillOnlineError(Exception):
+    pass
+
+
 class DeviceRepository:
     def __init__(self, database_url: str) -> None:
         self.database_url = database_url
@@ -204,6 +212,53 @@ class DeviceRepository:
                 (stale_after_sec,),
             ).fetchall()
         return [str(row[0]) for row in rows]
+
+    def delete_unbound_offline(self, device_id: str) -> None:
+        """Hard-delete an unbound offline device and its tasks.
+
+        Refreshes stale online flags first so recently silent devices can be removed.
+        """
+        self.mark_stale_offline()
+        with psycopg.connect(self.database_url) as connection:
+            with connection.transaction():
+                row = connection.execute(
+                    """
+                    SELECT online
+                    FROM devices
+                    WHERE device_id = %s
+                    FOR UPDATE
+                    """,
+                    (device_id,),
+                ).fetchone()
+                if row is None:
+                    raise DeviceNotFoundError(device_id)
+                if row[0] is True:
+                    raise DeviceStillOnlineError(device_id)
+                bound = connection.execute(
+                    """
+                    SELECT account_id
+                    FROM accounts
+                    WHERE device_id = %s
+                    LIMIT 1
+                    """,
+                    (device_id,),
+                ).fetchone()
+                if bound is not None:
+                    raise DeviceBoundError(device_id)
+                connection.execute(
+                    "DELETE FROM tasks WHERE device_id = %s",
+                    (device_id,),
+                )
+                deleted = connection.execute(
+                    """
+                    DELETE FROM devices
+                    WHERE device_id = %s
+                    RETURNING device_id
+                    """,
+                    (device_id,),
+                ).fetchone()
+                if deleted is None:
+                    raise DeviceNotFoundError(device_id)
 
     def update_geo_if_ip_matches(
         self,

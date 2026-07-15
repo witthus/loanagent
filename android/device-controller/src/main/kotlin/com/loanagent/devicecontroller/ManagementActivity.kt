@@ -17,6 +17,7 @@ class ManagementActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        UpgradePollScheduler.schedule(this)
 
         statusView = TextView(this).apply {
             textSize = 17f
@@ -26,8 +27,12 @@ class ManagementActivity : Activity() {
             text = "Apply minimum Device Owner policy"
             setOnClickListener { applyMinimumPolicy() }
         }
+        val checkUpgradeButton = Button(this).apply {
+            text = "Check remote Agent upgrade"
+            setOnClickListener { checkRemoteUpgrade() }
+        }
         val installButton = Button(this).apply {
-            text = "Install or upgrade Agent"
+            text = "Install or upgrade Agent (local manifest)"
             setOnClickListener { installAgent(rollbackAuthorized = false) }
         }
         val rollbackButton = Button(this).apply {
@@ -45,6 +50,7 @@ class ManagementActivity : Activity() {
                 ),
             )
             addView(applyPolicyButton)
+            addView(checkUpgradeButton)
             addView(installButton)
             addView(rollbackButton)
         }
@@ -79,6 +85,13 @@ class ManagementActivity : Activity() {
         refreshStatus()
     }
 
+    private fun checkRemoteUpgrade() {
+        UpgradePollScheduler.runNow(this) {
+            runOnUiThread { refreshStatus() }
+        }
+        refreshStatus()
+    }
+
     private fun installAgent(rollbackAuthorized: Boolean) {
         val ownerState = AndroidDeviceOwnerState(this).read()
         if (!ownerState.isThisAppDeviceOwner) {
@@ -105,10 +118,12 @@ class ManagementActivity : Activity() {
         statusView.text = buildString {
             appendLine("Device Owner: ${owner.isThisAppDeviceOwner}")
             appendLine("Owner package: ${owner.ownerPackage ?: "unknown / none"}")
+            appendLine("Enrolled device_id: ${store.enrolledDeviceId() ?: "NOT_SET"}")
             appendLine("Agent installed: ${version != null}")
             appendLine("Agent version: ${version ?: "NOT_INSTALLED"}")
             appendLine("Last enrollment: ${store.lastEnrollment()}")
             appendLine("Last recovery: ${store.lastRecovery()}")
+            appendLine("Last upgrade poll: ${store.lastUpgradePoll()}")
             append("Last install: ${store.lastInstall()}")
         }
     }

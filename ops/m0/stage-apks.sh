@@ -58,18 +58,37 @@ docker compose -f infra/compose.yaml --profile android run --name "$stage_contai
     dpc_apk_sha256="$(awk "\$2 == \"device-controller-debug.apk\" { print \$1 }" checksums.sha256)"
     agent_cert_sha256="$(awk "\$2 == \"agent-m0-debug.apk\" { print \$1 }" signing-certificates.sha256)"
     dpc_cert_sha256="$(awk "\$2 == \"device-controller-debug.apk\" { print \$1 }" signing-certificates.sha256)"
+    aapt="$ANDROID_HOME/build-tools/35.0.0/aapt"
+    agent_badging="$("$aapt" dump badging "$output/agent-m0-debug.apk")"
+    agent_version_name="$(
+      printf '%s\n' "$agent_badging" |
+        sed -n 's/.*versionName='\''\([^'\'']*\)'\''.*/\1/p' | head -1
+    )"
+    agent_version_code="$(
+      printf '%s\n' "$agent_badging" |
+        sed -n 's/.*versionCode='\''\([^'\'']*\)'\''.*/\1/p' | head -1
+    )"
+    if [[ -z "$agent_version_name" || -z "$agent_version_code" ]]; then
+      echo "Failed to read agent version from staged APK" >&2
+      exit 1
+    fi
     {
       printf "classification=UNTRUSTED_DEBUG_TEST_ONLY\n"
       printf "source_ref=%s\n" "$M0_SOURCE_REF"
       printf "build_command=infra/compose.yaml android-builder assembleDebug\n"
       printf "signing=Android debug test key; no production key\n"
+      printf "agent_version_name=%s\n" "$agent_version_name"
+      printf "agent_version_code=%s\n" "$agent_version_code"
       printf "agent_apk_sha256=%s\n" "$agent_apk_sha256"
       printf "agent_signing_cert_sha256=%s\n" "$agent_cert_sha256"
       printf "device_controller_apk_sha256=%s\n" "$dpc_apk_sha256"
       printf "device_controller_signing_cert_sha256=%s\n" "$dpc_cert_sha256"
+      printf "install_apk=agent-m0-debug.apk\n"
+      printf "do_not_install=agent-debug.apk\n"
     } > provenance.txt
     test -s signing-certificates.sha256
     test -s provenance.txt
+    printf "Agent version: %s (versionCode %s)\n" "$agent_version_name" "$agent_version_code"
     printf "APK SHA-256:\n"
     while IFS= read -r line; do printf "%s\n" "$line"; done < checksums.sha256
     printf "Signing certificate SHA-256:\n"
@@ -101,4 +120,11 @@ for artifact in \
 do
   install -m 0644 "$host_tmp/$artifact" "$output/$artifact"
 done
+# Stale gradle-named copy; never install this — only agent-m0-debug.apk.
+rm -f "$output/agent-debug.apk"
 chmod 0644 "$output"/*
+printf 'Staged install candidate: %s\n' "$output/agent-m0-debug.apk"
+if [[ -f "$output/provenance.txt" ]]; then
+  grep -E '^(agent_version_|install_apk|do_not_install)' "$output/provenance.txt" || true
+fi
+

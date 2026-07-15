@@ -93,6 +93,7 @@ class ScreenWakeActivity : Activity() {
         private const val READY_SLICE_MS = 100L
         private val pendingLatch = AtomicReference<CountDownLatch?>(null)
         private val pendingResult = AtomicReference<ScreenWakeResult?>(null)
+        private val sessionWakeLock = AtomicReference<PowerManager.WakeLock?>(null)
 
         fun request(
             starter: Context,
@@ -104,47 +105,79 @@ class ScreenWakeActivity : Activity() {
             check(Looper.myLooper() != Looper.getMainLooper()) {
                 "ScreenWakeActivity.request must not run on the main thread"
             }
-            acquireBriefWakeLock(starter)
-            val latch = CountDownLatch(1)
-            pendingResult.set(null)
-            pendingLatch.set(latch)
-            val intent =
-                Intent(starter, ScreenWakeActivity::class.java).apply {
-                    addFlags(
-                        Intent.FLAG_ACTIVITY_NEW_TASK or
-                            Intent.FLAG_ACTIVITY_CLEAR_TOP or
-                            Intent.FLAG_ACTIVITY_SINGLE_TOP or
-                            Intent.FLAG_ACTIVITY_NO_ANIMATION,
+            val holdMs = timeoutMs.coerceAtLeast(5_000L) + 2_000L
+            val wakeLock = acquireHeldWakeLock(starter, holdMs)
+            try {
+                // DO / keyguard-disabled: wake lock alone is enough; skip Activity (HyperOS may deny it).
+                if (waitUntilReady(starter, 2_000L, checkCancelled = checkCancelled)) {
+                    keepDisplayAwake(starter, 20_000L)
+                    return ScreenWakeOutcome.decide(
+                        readyAfterWakeLock = true,
+                        activityResult = null,
+                        readyAfterActivityOrTimeout = true,
                     )
                 }
-            val started = CountDownLatch(1)
-            val startOk = java.util.concurrent.atomic.AtomicBoolean(false)
-            android.os.Handler(android.os.Looper.getMainLooper()).post {
-                try {
-                    starter.startActivity(intent)
-                    startOk.set(true)
-                } catch (error: Exception) {
-                    Log.w(TAG, "failed to start ScreenWakeActivity", error)
-                    complete(ScreenWakeResult.StartFailed)
-                } finally {
-                    started.countDown()
+                val latch = CountDownLatch(1)
+                pendingResult.set(null)
+                pendingLatch.set(latch)
+                val intent =
+                    Intent(starter, ScreenWakeActivity::class.java).apply {
+                        addFlags(
+                            Intent.FLAG_ACTIVITY_NEW_TASK or
+                                Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                                Intent.FLAG_ACTIVITY_SINGLE_TOP or
+                                Intent.FLAG_ACTIVITY_NO_ANIMATION,
+                        )
+                    }
+                val started = CountDownLatch(1)
+                val startOk = java.util.concurrent.atomic.AtomicBoolean(false)
+                android.os.Handler(android.os.Looper.getMainLooper()).post {
+                    try {
+                        starter.startActivity(intent)
+                        startOk.set(true)
+                    } catch (error: Exception) {
+                        Log.w(TAG, "failed to start ScreenWakeActivity", error)
+                        complete(ScreenWakeResult.StartFailed)
+                    } finally {
+                        started.countDown()
+                    }
                 }
-            }
-            awaitCooperatively(started, 3_000L, checkCancelled)
-            if (!startOk.get()) {
-                pendingLatch.compareAndSet(latch, null)
-                return pendingResult.get() ?: ScreenWakeResult.StartFailed
-            }
-            val finished = awaitCooperatively(
-                latch,
-                timeoutMs.coerceAtLeast(1_000L),
-                checkCancelled,
-            )
-            return if (!finished) {
-                pendingLatch.compareAndSet(latch, null)
-                ScreenWakeResult.Timeout
-            } else {
-                pendingResult.get() ?: ScreenWakeResult.DismissFailed
+                awaitCooperatively(started, 3_000L, checkCancelled)
+                if (!startOk.get()) {
+                    pendingLatch.compareAndSet(latch, null)
+                    val ready = waitUntilReady(starter, 1_500L, checkCancelled = checkCancelled)
+                    val outcome =
+                        ScreenWakeOutcome.decide(
+                            readyAfterWakeLock = false,
+                            activityResult = pendingResult.get() ?: ScreenWakeResult.StartFailed,
+                            readyAfterActivityOrTimeout = ready,
+                        )
+                    if (outcome == ScreenWakeResult.Ok) keepDisplayAwake(starter, 20_000L)
+                    return outcome
+                }
+                val finished = awaitCooperatively(
+                    latch,
+                    timeoutMs.coerceAtLeast(1_000L),
+                    checkCancelled,
+                )
+                val activityResult =
+                    if (!finished) {
+                        pendingLatch.compareAndSet(latch, null)
+                        pendingResult.get() ?: ScreenWakeResult.Timeout
+                    } else {
+                        pendingResult.get() ?: ScreenWakeResult.DismissFailed
+                    }
+                val ready = waitUntilReady(starter, 2_000L, checkCancelled = checkCancelled)
+                val outcome =
+                    ScreenWakeOutcome.decide(
+                        readyAfterWakeLock = false,
+                        activityResult = activityResult,
+                        readyAfterActivityOrTimeout = ready,
+                    )
+                if (outcome == ScreenWakeResult.Ok) keepDisplayAwake(starter, 20_000L)
+                return outcome
+            } finally {
+                releaseWakeLock(wakeLock)
             }
         }
 
@@ -193,19 +226,34 @@ class ScreenWakeActivity : Activity() {
             if (left > Long.MAX_VALUE - right) Long.MAX_VALUE else left + right
 
         @Suppress("DEPRECATION")
-        private fun acquireBriefWakeLock(context: Context) {
-            try {
-                val power = context.getSystemService(PowerManager::class.java) ?: return
-                if (power.isInteractive) return
+        private fun acquireHeldWakeLock(context: Context, holdMs: Long): PowerManager.WakeLock? {
+            return try {
+                val power = context.getSystemService(PowerManager::class.java) ?: return null
                 val wakeLock =
                     power.newWakeLock(
                         PowerManager.SCREEN_BRIGHT_WAKE_LOCK or PowerManager.ACQUIRE_CAUSES_WAKEUP,
                         "loanagent:screenwake",
                     )
                 wakeLock.setReferenceCounted(false)
-                wakeLock.acquire(3_000L)
+                wakeLock.acquire(holdMs.coerceAtLeast(1_000L))
+                wakeLock
             } catch (error: Exception) {
                 Log.w(TAG, "wake lock failed", error)
+                null
+            }
+        }
+
+        private fun keepDisplayAwake(context: Context, holdMs: Long) {
+            val next = acquireHeldWakeLock(context, holdMs) ?: return
+            releaseWakeLock(sessionWakeLock.getAndSet(next))
+        }
+
+        private fun releaseWakeLock(wakeLock: PowerManager.WakeLock?) {
+            if (wakeLock == null) return
+            try {
+                if (wakeLock.isHeld) wakeLock.release()
+            } catch (error: Exception) {
+                Log.w(TAG, "wake lock release failed", error)
             }
         }
     }

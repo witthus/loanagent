@@ -8,6 +8,47 @@ import org.junit.Test
 
 class DeviceControllerDecisionsTest {
     @Test
+    fun upgradePollInstallsOnlyWhenPendingAndConfigured() {
+        assertEquals(
+            UpgradePollAction.INSTALL_PENDING,
+            UpgradePollDecision.decide(
+                isDeviceOwner = true,
+                hasTrustedUpdateConfig = true,
+                hasEnrolledDeviceId = true,
+                hasControlPlane = true,
+                installInProgress = false,
+                pending = PendingUpgradeInfo(
+                    manifestUrl = "https://updates.example/canary.json",
+                    ring = "canary",
+                    requestId = "req-1",
+                ),
+            ),
+        )
+        assertEquals(
+            UpgradePollAction.SKIP_NO_PENDING,
+            UpgradePollDecision.decide(
+                isDeviceOwner = true,
+                hasTrustedUpdateConfig = true,
+                hasEnrolledDeviceId = true,
+                hasControlPlane = true,
+                installInProgress = false,
+                pending = null,
+            ),
+        )
+        assertEquals(
+            UpgradePollAction.SKIP_NOT_DEVICE_OWNER,
+            UpgradePollDecision.decide(
+                isDeviceOwner = false,
+                hasTrustedUpdateConfig = true,
+                hasEnrolledDeviceId = true,
+                hasControlPlane = true,
+                installInProgress = false,
+                pending = PendingUpgradeInfo("https://x", null, null),
+            ),
+        )
+    }
+
+    @Test
     fun deviceOwnerStateOnlyMatchesThisApplication() {
         val state = DeviceOwnerState.evaluate(
             applicationPackage = "com.loanagent.devicecontroller",
@@ -50,7 +91,10 @@ class DeviceControllerDecisionsTest {
         )
 
         assertEquals(PolicyStatus.APPLIED, result.status)
-        assertEquals(setOf(PolicyCapability.LOCK_TASK), result.applied)
+        assertEquals(
+            setOf(PolicyCapability.LOCK_TASK, PolicyCapability.KEYGUARD_DISABLED),
+            result.applied,
+        )
         assertEquals(
             setOf(PolicyCapability.MAXIMUM_TIME_TO_LOCK),
             result.unsupported,
@@ -59,7 +103,49 @@ class DeviceControllerDecisionsTest {
             setOf(PolicyCapability.KEEP_SCREEN_ON),
             result.availableToActivity,
         )
-        assertEquals(listOf("lockTask:com.loanagent.agent"), gateway.operations)
+        assertEquals(
+            listOf("lockTask:com.loanagent.agent", "keyguardDisabled:true"),
+            gateway.operations,
+        )
+    }
+
+    @Test
+    fun policyCoordinatorAppliesKeyguardDisabledWhenDeviceOwner() {
+        val gateway = RecordingPolicyGateway()
+        val result = PolicyCoordinator(gateway).applyMinimumPolicy(
+            ownerState = DeviceOwnerState(true, "com.loanagent.devicecontroller"),
+            capabilities = PolicyCapabilities(
+                lockTask = true,
+                maximumTimeToLock = true,
+                keepScreenOn = true,
+                keyguardDisabled = true,
+            ),
+            agentPackage = "com.loanagent.agent",
+        )
+
+        assertEquals(PolicyStatus.APPLIED, result.status)
+        assertTrue(PolicyCapability.KEYGUARD_DISABLED in result.applied)
+        assertTrue("keyguardDisabled:true" in gateway.operations)
+    }
+
+    @Test
+    fun policyCoordinatorFailsWhenSetKeyguardDisabledThrows() {
+        val result = PolicyCoordinator(
+            RecordingPolicyGateway(throwOnKeyguardDisabled = true),
+        ).applyMinimumPolicy(
+            ownerState = DeviceOwnerState(true, "com.loanagent.devicecontroller"),
+            capabilities = PolicyCapabilities(
+                lockTask = true,
+                maximumTimeToLock = false,
+                keepScreenOn = true,
+                keyguardDisabled = true,
+            ),
+            agentPackage = "com.loanagent.agent",
+        )
+
+        assertEquals(PolicyStatus.FAILED, result.status)
+        assertEquals(PolicyError.SET_KEYGUARD_DISABLED_FAILED, result.error)
+        assertEquals(setOf(PolicyCapability.LOCK_TASK), result.applied)
     }
 
     @Test
@@ -454,13 +540,14 @@ class DeviceControllerDecisionsTest {
         artifact = UpdateArtifact(url = url, sha256 = sha256, sizeBytes = sizeBytes),
         keyId = "m0-key",
         signature = byteArrayOf(1, 2, 3),
-        issuedAt = "2026-07-10T04:00:00Z",
+        issuedAt = "2026-07-15T12:00:00Z",
     )
 }
 
 private class RecordingPolicyGateway(
     private val lockTaskPostcondition: Boolean = true,
     private val throwOnLockTaskVerification: Boolean = false,
+    private val throwOnKeyguardDisabled: Boolean = false,
 ) : DevicePolicyGateway {
     val operations = mutableListOf<String>()
 
@@ -477,5 +564,12 @@ private class RecordingPolicyGateway(
             error("fixture policy verification failure")
         }
         return lockTaskPostcondition
+    }
+
+    override fun setKeyguardDisabled(disabled: Boolean) {
+        if (throwOnKeyguardDisabled) {
+            error("fixture keyguard disable failure")
+        }
+        operations += "keyguardDisabled:$disabled"
     }
 }

@@ -4,7 +4,7 @@ import psycopg
 from psycopg import sql
 
 
-FLEET_SCHEMA_VERSION = 21
+FLEET_SCHEMA_VERSION = 22
 
 
 def migrate_fleet_schema(database_url: str) -> None:
@@ -803,6 +803,27 @@ def migrate_fleet_schema(database_url: str) -> None:
                 """
             )
             _record_migration(connection, 21)
+
+        if 22 not in applied:
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS device_agent_upgrades (
+                    device_id TEXT PRIMARY KEY REFERENCES devices(device_id) ON DELETE CASCADE,
+                    status TEXT NOT NULL CHECK (
+                        status IN ('pending', 'in_progress', 'succeeded', 'failed')
+                    ),
+                    ring TEXT CHECK (
+                        ring IS NULL OR ring IN ('canary', 'staged', 'stable')
+                    ),
+                    manifest_url TEXT,
+                    detail TEXT,
+                    request_id UUID NOT NULL DEFAULT gen_random_uuid(),
+                    requested_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+            _record_migration(connection, 22)
 
         # Compat: an earlier main revision used migrations 20/21 for tasks.device_id.
         # Keep WIP geo columns available even when those versions are already recorded.
