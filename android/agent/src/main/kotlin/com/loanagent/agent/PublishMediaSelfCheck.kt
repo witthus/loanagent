@@ -56,7 +56,7 @@ object PublishMediaSelfCheck {
         }
         GalleryMediaWriter.deleteUri(context, found)
 
-        if (!xhsInstalled(context)) {
+        if (!XhsPhotoAccess.isInstalled(context)) {
             return PublishMediaSelfCheckResult(
                 PublishMediaSelfCheckCode.XHS_NOT_INSTALLED,
                 "相册写入成功，但未安装小红书",
@@ -73,14 +73,6 @@ object PublishMediaSelfCheck {
             "通过：矩阵助手可写入 DCIM/Camera，小红书已授照片/相册权限",
         )
     }
-
-    private fun xhsInstalled(context: Context): Boolean =
-        try {
-            context.packageManager.getPackageInfo(XhsPhotoAccess.XHS_PACKAGE, 0)
-            true
-        } catch (_: PackageManager.NameNotFoundException) {
-            false
-        }
 
     fun xhsPhotoGranted(context: Context): Boolean {
         val pm = context.packageManager
@@ -100,10 +92,8 @@ object PublishMediaSelfCheck {
             val appOps = context.getSystemService(android.app.AppOpsManager::class.java)
                 ?: return false
             val uid = context.packageManager.getPackageUid(XhsPhotoAccess.XHS_PACKAGE, 0)
-            val ops = buildList {
-                for (perm in XhsPhotoAccess.ACCEPTED_PERMISSIONS) {
-                    android.app.AppOpsManager.permissionToOp(perm)?.let { add(it) }
-                }
+            val ops = XhsPhotoAccess.SUFFICIENT_PERMISSIONS.mapNotNull { perm ->
+                android.app.AppOpsManager.permissionToOp(perm)
             }.distinct()
             ops.any { op ->
                 @Suppress("DEPRECATION")
@@ -113,24 +103,6 @@ object PublishMediaSelfCheck {
         } catch (error: Exception) {
             Log.w(TAG, "appops photo probe failed", error)
             false
-        }
-    }
-
-    fun grantedPermissionsFor(context: Context, packageName: String): Set<String>? {
-        return try {
-            context.packageManager.getPackageInfo(packageName, 0)
-            buildSet {
-                for (perm in XhsPhotoAccess.ACCEPTED_PERMISSIONS) {
-                    if (
-                        context.packageManager.checkPermission(perm, packageName) ==
-                        PackageManager.PERMISSION_GRANTED
-                    ) {
-                        add(perm)
-                    }
-                }
-            }
-        } catch (_: PackageManager.NameNotFoundException) {
-            null
         }
     }
 }

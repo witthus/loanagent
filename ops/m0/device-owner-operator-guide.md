@@ -184,47 +184,25 @@ docker compose -f infra/compose.yaml --profile tools run --rm --no-deps \
 
 ---
 
-## 4. 清机 + 扫码设为 Device Owner（手机操作）
+## 4. ADB 设为 Device Owner（当前机型不支持扫码）
 
-### 4.1 清机前备份
+HyperOS / 当前试点机型**不支持**欢迎页扫码开通。用户侧完整步骤见运维台 PDF：
+`https://android.hashhub.com/downloads/device-bind-guide.pdf`。
 
-- 小米账号 / 小红书账号密码
-- 本机有用数据（会全部清空）
+运维摘要：
 
-### 4.2 恢复出厂
-
-设置 → 我的设备 → 恢复出厂设置（文案因 HyperOS 略有差异）。
-
-### 4.3 停在欢迎页
-
-- **不要**登录小米账号  
-- **不要**跳过成「普通用户」后随便用  
-- 连上 Wi‑Fi（开通时要下载 DPC）
-
-### 4.4 扫码开通
-
-1. 欢迎页空白处 **连续点击约 6 下**，出现二维码扫描入口。  
-2. 扫描 `device-owner.png`。  
-3. 选择 **完全托管 / Fully managed device**。  
-4. 等待下载并安装 Device Controller，完成策略合规。
-
-### 4.5 验收 DO
-
-有线/无线 ADB（可选）：
+1. 恢复出厂，**不要**登录小米账号；打开 USB/无线调试。  
+2. `adb install -r` Device Controller，再：
 
 ```bash
-adb shell dpm list-owners
-# 应看到 com.loanagent.devicecontroller
+adb shell dpm set-device-owner \
+  com.loanagent.devicecontroller/com.loanagent.devicecontroller.LoanAgentDeviceAdminReceiver
 ```
 
-打开 **Device Controller**：
+3. 打开 Device Controller → Device Owner = true →「Apply minimum Device Owner policy」→ 确认 `KEYGUARD_DISABLED`。  
+4. 再装同证书 Agent，开无障碍 / IME / 电池 / HyperOS「后台弹出界面」，登录小红书，Ops 绑定。
 
-- Device Owner: true  
-- Enrolled device_id: **抄下来**（后面推送升级用这个）  
-- 点「Apply minimum Device Owner policy」  
-- Last recovery / policy 中应含 `KEYGUARD_DISABLED`
-
-若 HyperOS 第一次装 APK 弹「受限设置」，按提示允许。
+（历史扫码流程已停用，勿再生成 enrollment QR 给用户。）
 
 ---
 
@@ -235,9 +213,9 @@ adb shell dpm list-owners
 3. HyperOS：允许「后台弹出界面」（设置 → 应用 → Loanagent Agent → 其他权限），或 ADB：
    `appops set com.loanagent.agent 10021 allow`（建议同时 `10020` / `10008`）。未开时灭屏任务会亮屏但拉不起小红书，最终 `EXECUTION_TIMEOUT` / `XHS_NOT_FOREGROUND`。
 4. **不要**对 Agent 使用 `force-stop`（易清掉无障碍）。
-4. 登录小红书。  
-5. Ops → 设备：等心跳出现 → 绑定账号。  
-6. 灭屏 ≥5 分钟 → 发一篇测试笔记：不得出现 `SCREEN_NOT_READY`。
+5. 登录小红书。  
+6. Ops → 设备：等心跳出现 → 绑定账号。  
+7. 灭屏 ≥5 分钟 → 发一篇测试笔记：不得出现 `SCREEN_NOT_READY`。
 
 ---
 

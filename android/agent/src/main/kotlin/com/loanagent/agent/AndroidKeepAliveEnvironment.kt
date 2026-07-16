@@ -3,7 +3,6 @@ package com.loanagent.agent
 import android.app.ActivityManager
 import android.app.KeyguardManager
 import android.content.Context
-import android.content.pm.PackageManager
 import android.os.PowerManager
 import android.os.Process
 
@@ -54,13 +53,7 @@ class AndroidKeepAliveEnvironment(
         }
     }
 
-    override fun xhsInstalled(): Boolean =
-        try {
-            context.packageManager.getPackageInfo(XhsPhotoAccess.XHS_PACKAGE, 0)
-            true
-        } catch (_: PackageManager.NameNotFoundException) {
-            false
-        }
+    override fun xhsInstalled(): Boolean = XhsPhotoAccess.isInstalled(context)
 
     override fun xhsPhotoAccessGranted(): Boolean =
         PublishMediaSelfCheck.xhsPhotoGranted(context)

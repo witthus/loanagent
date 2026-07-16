@@ -73,11 +73,10 @@ docker build -f docker/control-plane/Dockerfile --target runtime -t loanagent-cp
 control-plane 与 Android builder 均以非 root 用户运行；源码只读挂载，Python 虚拟环境、uv/Gradle
 缓存和 Android 构建输出保存在 named volumes。
 
-Android 构建完成后的 debug APK 位于 builder volume：
-`/home/gradle/work/build/device-controller/outputs/apk/debug/device-controller-debug.apk` 和
-`/home/gradle/work/build/agent/outputs/apk/debug/agent-debug.apk`。用于 Redmi Note 12 Turbo
-后续测试的稳定、宿主可见交付路径为 `ops/m0/generated/device-controller-debug.apk` 和
-`ops/m0/generated/agent-m0-debug.apk`；Docker-only 复制、无线 ADB 安装与手动开启无障碍/IME
+Android 构建完成后的 debug APK 位于 builder volume（Gradle 原始名 `agent-debug.apk`）。
+**安装/发布请只用** `ops/m0/stage-apks.sh` 产出的宿主路径：
+`ops/m0/generated/device-controller-debug.apk` 与 `ops/m0/generated/agent-m0-debug.apk`
+（勿直接安装 volume 里的 `agent-debug.apk`）。Docker-only 无线 ADB 与无障碍/IME
 命令见 `ops/m0/redmi-note-12-turbo-test.md`。
 
 完成 Android 构建后运行 `bash ops/m0/stage-apks.sh`。脚本本身只调用 Compose

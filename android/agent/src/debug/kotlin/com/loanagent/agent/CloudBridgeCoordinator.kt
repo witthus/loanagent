@@ -115,8 +115,8 @@ class AccessibilityPlaybookRuntime(
         // surfaces as XHS_NOT_FOREGROUND even though the task "launched".
         val service = M0AccessibilityService.instance
         val starter: Context = service ?: context
-        val alreadyForeground = currentLease()?.packageName == XHS_PACKAGE
-        val launch = starter.packageManager.getLaunchIntentForPackage(XHS_PACKAGE) ?: return false
+        val alreadyForeground = currentLease()?.packageName == XhsPhotoAccess.XHS_PACKAGE
+        val launch = starter.packageManager.getLaunchIntentForPackage(XhsPhotoAccess.XHS_PACKAGE) ?: return false
         launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         if (alreadyForeground) {
             // Reset nested note/DM sheets back to the main task root.
@@ -152,10 +152,10 @@ class AccessibilityPlaybookRuntime(
     }
 
     private fun isXhsForeground(): Boolean {
-        if (currentLease()?.packageName == XHS_PACKAGE) return true
+        if (currentLease()?.packageName == XhsPhotoAccess.XHS_PACKAGE) return true
         // Focused window may briefly be SystemUI/IME; still accept when an XHS window is active.
         val service = M0AccessibilityService.instance ?: return false
-        return service.hasAllowedPackageWindow(XHS_PACKAGE)
+        return service.hasAllowedPackageWindow(XhsPhotoAccess.XHS_PACKAGE)
     }
 
     private fun startActivityOnMain(starter: Context, intent: Intent): Boolean {
@@ -182,7 +182,6 @@ class AccessibilityPlaybookRuntime(
 
     companion object {
         private const val TAG = "A11yPlaybookRuntime"
-        private const val XHS_PACKAGE = "com.xingin.xhs"
         private const val WAIT_SLICE_MS = 100L
     }
 

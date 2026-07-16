@@ -23,6 +23,29 @@ object GalleryMediaWriter {
         mimeType: String = "image/png",
     ): Uri? {
         if (bytes.isEmpty()) return null
+        return insertWithWriter(context, displayName, mimeType) { output ->
+            output.write(bytes)
+        }
+    }
+
+    fun insertImageFile(
+        context: Context,
+        file: java.io.File,
+        displayName: String,
+        mimeType: String,
+    ): Uri? {
+        if (!file.exists() || file.length() == 0L) return null
+        return insertWithWriter(context, displayName, mimeType) { output ->
+            file.inputStream().use { input -> input.copyTo(output) }
+        }
+    }
+
+    private fun insertWithWriter(
+        context: Context,
+        displayName: String,
+        mimeType: String,
+        write: (java.io.OutputStream) -> Unit,
+    ): Uri? {
         val resolver = context.contentResolver
         val values = ContentValues().apply {
             put(MediaStore.Images.Media.DISPLAY_NAME, displayName)
@@ -47,7 +70,7 @@ object GalleryMediaWriter {
         }
         return try {
             resolver.openOutputStream(uri)?.use { output ->
-                output.write(bytes)
+                write(output)
             } ?: run {
                 resolver.delete(uri, null, null)
                 return null

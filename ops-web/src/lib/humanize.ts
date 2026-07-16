@@ -122,18 +122,23 @@ const MAP: Record<string, HumanMessage> = {
   },
   MEDIA_DOWNLOAD_FAILED: {
     title: '下载图片失败',
-    detail: '设备从云端拉取媒体时失败（已自动重试）。',
-    nextStep: '检查手机能否访问控制面；看设备 logcat MediaBridge 明细后重试。',
+    detail: '设备从云端拉取媒体失败，或拿到的不是图片（例如备案拦截页）。',
+    nextStep: '确认手机经 HTTPS 公网域名拉媒体；看 MediaBridge logcat 后重试。',
   },
   MEDIA_STORE_FAILED: {
     title: '图片写入系统相册失败',
     detail: '下载成功但无法写入 MediaStore。',
     nextStep: '检查存储权限后重试；仍失败请清相册缓存或重启 Agent。',
   },
-  AGENT_UPGRADE_PENDING: {
-    title: 'Agent 升级已排队',
-    detail: '控制面已标记 Device Owner 设备待升级，等待 DPC 拉取签名 manifest。',
-    nextStep: '在 Device Controller 点「Check remote Agent upgrade」，或等待约 15 分钟轮询。',
+  DEVICE_BOUND: {
+    title: '设备仍绑定账号，无法删除',
+    detail: '删除未绑定设备前，请先在「账号」页解绑该设备。',
+    nextStep: '解绑账号后再删设备行。',
+  },
+  DEVICE_STILL_ONLINE: {
+    title: '设备仍在线，无法删除',
+    detail: '在线设备不能直接删除，避免误删正在跑任务的手机。',
+    nextStep: '等设备离线（或停掉 Agent 心跳）后再删。',
   },
   FINAL_ACTION_BLOCKED: {
     title: '最后一步点「发布」失败了',

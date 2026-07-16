@@ -17,7 +17,7 @@ from loanagent.secure_files import atomic_write_mode_0600
 
 
 DEFAULT_MEDIA_ROOT = "/tmp/loanagent-media"
-DEFAULT_SIGNED_TTL_SEC = 900
+DEFAULT_SIGNED_TTL_SEC = 3_600
 
 
 @dataclass(frozen=True)
@@ -124,7 +124,10 @@ class MediaRepository:
         ttl_sec: int = DEFAULT_SIGNED_TTL_SEC,
         now: int | None = None,
     ) -> str:
-        base = os.environ.get("PUBLIC_BASE_URL", "http://127.0.0.1:8000").rstrip("/")
+        public = os.environ.get("PUBLIC_BASE_URL", "http://127.0.0.1:8000").rstrip("/")
+        https = os.environ.get("HTTPS_PUBLIC_BASE_URL", "").rstrip("/")
+        # Prefer HTTPS public origin (Japan edge) when set — same rule as upgrade manifests.
+        base = https or public
         path = self.signed_download_path(media_id)
         query = urlencode(self.signed_download_query(media_id, ttl_sec=ttl_sec, now=now))
         return f"{base}{path}?{query}"

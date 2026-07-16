@@ -13,7 +13,7 @@ class XhsLaunchTrampolineActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         try {
-            val launch = packageManager.getLaunchIntentForPackage(XHS_PACKAGE)
+            val launch = packageManager.getLaunchIntentForPackage(XhsPhotoAccess.XHS_PACKAGE)
             if (launch != null) {
                 launch.addFlags(
                     Intent.FLAG_ACTIVITY_NEW_TASK or
@@ -33,6 +33,5 @@ class XhsLaunchTrampolineActivity : Activity() {
 
     companion object {
         private const val TAG = "XhsLaunchTrampoline"
-        private const val XHS_PACKAGE = "com.xingin.xhs"
     }
 }

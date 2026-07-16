@@ -172,23 +172,7 @@ ops/m0/publish-update-manifest.sh canary /path/to/signed-canary.json
 
 ## Deliverable debug APKs
 
-After the Docker Android build, the builder-volume artifacts are:
-
-- DPC: `/home/gradle/work/build/device-controller/outputs/apk/debug/device-controller-debug.apk`
-- Agent: `/home/gradle/work/build/agent/outputs/apk/debug/agent-debug.apk`
-
-Copy them to stable, git-ignored delivery paths using the container; these are the files to serve
-or install during the later Redmi Note 12 Turbo test:
-
-```bash
-docker compose -f infra/compose.yaml --profile android run --rm --no-deps \
-  android-builder bash -lc \
-  'mkdir -p /workspace/ops/m0/generated &&
-   install -m 0600 /home/gradle/work/build/device-controller/outputs/apk/debug/device-controller-debug.apk /workspace/ops/m0/generated/device-controller-debug.apk &&
-   install -m 0600 /home/gradle/work/build/agent/outputs/apk/debug/agent-debug.apk /workspace/ops/m0/generated/agent-m0-debug.apk'
-```
-
-Host-visible delivery paths:
+After the Docker Android build, stage git-ignored delivery APKs with `ops/m0/stage-apks.sh` (do **not** install Gradle’s raw `agent-debug.apk` name):
 
 - `ops/m0/generated/device-controller-debug.apk`
 - `ops/m0/generated/agent-m0-debug.apk`

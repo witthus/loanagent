@@ -527,17 +527,6 @@ def list_update_manifests() -> dict:
     return {"rings": rings}
 
 
-@app.get("/api/v1/update-manifests/{ring}", dependencies=[Depends(require_ops)])
-def get_update_manifest_meta(ring: str) -> dict:
-    try:
-        return load_ring_manifest(ring).as_public_dict()
-    except ValueError as error:
-        raise HTTPException(
-            status_code=400,
-            detail={"code": "INVALID_RING", "message": str(error)},
-        ) from error
-
-
 @app.post("/api/v1/update-manifests/{ring}", dependencies=[Depends(require_ops)])
 def publish_update_manifest(ring: str, payload: PublishUpdateManifestPayload) -> dict:
     if payload.ring != ring:
@@ -586,18 +575,6 @@ def get_device_upgrade(device_id: str, request: Request) -> dict | None:
     body = pending.as_dict()
     body["pending"] = True
     return body
-
-
-@app.get(
-    "/api/v1/devices/{device_id}/upgrade/status",
-    dependencies=[Depends(require_ops)],
-)
-def get_device_upgrade_status(device_id: str, request: Request) -> dict:
-    upgrades: DeviceUpgradeRepository = request.app.state.device_upgrade_repository
-    record = upgrades.get(device_id)
-    if record is None:
-        return {"device_id": device_id, "pending": False, "status": None}
-    return record.as_dict()
 
 
 @app.post(

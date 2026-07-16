@@ -554,7 +554,7 @@ class AgentStatusActivity : Activity() {
     }
 
     private fun launchXhs() {
-        val intent = packageManager.getLaunchIntentForPackage(XHS_PACKAGE)
+        val intent = packageManager.getLaunchIntentForPackage(XhsPhotoAccess.XHS_PACKAGE)
         if (intent == null) output.text = "XHS_NOT_INSTALLED" else startActivity(intent)
     }
 
@@ -776,7 +776,6 @@ class AgentStatusActivity : Activity() {
     }
 
     companion object {
-        private const val XHS_PACKAGE = "com.xingin.xhs"
         private val defaultControllerProvider: () -> M0DiagnosticController? = {
             M0AccessibilityService.instance
         }

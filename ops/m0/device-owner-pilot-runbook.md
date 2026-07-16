@@ -8,6 +8,9 @@
 
 **当前生产 HTTPS：** `https://android.hashhub.com`（日本边缘 → 国内 control-plane）
 
+**新机开通：** 仅 ADB Device Owner（不支持扫码）。用户教程：
+`https://android.hashhub.com/downloads/device-bind-guide.pdf`
+
 ---
 
 ## 清机前检查

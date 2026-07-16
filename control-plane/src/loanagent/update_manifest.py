@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import re
@@ -133,17 +132,6 @@ def publish_signed_manifest(ring: str, payload: dict[str, Any]) -> HostedUpdateM
     encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":"), sort_keys=False)
     path.write_text(encoded + "\n", encoding="utf-8")
     return load_ring_manifest(ring)
-
-
-def sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        while True:
-            chunk = handle.read(1024 * 1024)
-            if not chunk:
-                break
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def build_unsigned_manifest_template(

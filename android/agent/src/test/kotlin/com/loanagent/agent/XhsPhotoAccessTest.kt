@@ -13,15 +13,6 @@ class XhsPhotoAccessTest {
     }
 
     @Test
-    fun acceptsPartialVisualSelection() {
-        assertTrue(
-            XhsPhotoAccess.isGranted(
-                setOf("android.permission.READ_MEDIA_VISUAL_USER_SELECTED"),
-            ),
-        )
-    }
-
-    @Test
     fun acceptsLegacyStorage() {
         assertTrue(
             XhsPhotoAccess.isGranted(setOf("android.permission.READ_EXTERNAL_STORAGE")),
@@ -29,10 +20,21 @@ class XhsPhotoAccessTest {
     }
 
     @Test
-    fun acceptsReadMediaVideo() {
-        assertTrue(
+    fun rejectsPartialOrVideoOnly() {
+        assertFalse(
+            XhsPhotoAccess.isGranted(
+                setOf("android.permission.READ_MEDIA_VISUAL_USER_SELECTED"),
+            ),
+        )
+        assertFalse(
             XhsPhotoAccess.isGranted(setOf("android.permission.READ_MEDIA_VIDEO")),
         )
+    }
+
+    @Test
+    fun rejectsUnrelatedOrEmpty() {
+        assertFalse(XhsPhotoAccess.isGranted(emptySet()))
+        assertFalse(XhsPhotoAccess.isGranted(setOf("android.permission.CAMERA")))
     }
 
     @Test

@@ -34,7 +34,9 @@ services:
       UPDATE_MANIFEST_DIR: /app/agent-releases/update-manifests
     volumes:
       - media-data:/app/media
+      # APK artifacts stay read-only in-container; manifests need write for Ops publish API.
       - ../agent-releases:/app/agent-releases:ro
+      - ../agent-releases/update-manifests:/app/agent-releases/update-manifests
     ports:
       - "80:8000"
     healthcheck:

@@ -1,16 +1,10 @@
 package com.loanagent.agent
 
-import android.content.ContentValues
 import android.content.Context
-import android.net.Uri
-import android.os.Build
-import android.os.Environment
-import android.provider.MediaStore
 import android.util.Log
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
-import java.io.FileInputStream
 import java.net.HttpURLConnection
 import java.net.URL
 import java.util.concurrent.atomic.AtomicReference
@@ -23,6 +17,7 @@ object MediaBridge {
     private const val TAG = "MediaBridge"
     private const val MAX_ATTEMPTS = 3
     private const val RETRY_SLEEP_MS = 400L
+    private const val MAX_DOWNLOAD_BYTES = 40L * 1024L * 1024L
 
     private val lastError = AtomicReference<String?>(null)
 
@@ -196,19 +191,30 @@ object MediaBridge {
                 Log.w(TAG, "download HTTP $code for $url")
                 return null
             }
+            val contentType = connection.contentType
+            if (!MediaImageBytes.contentTypeLooksLikeImage(contentType)) {
+                Log.w(TAG, "download non-image Content-Type=$contentType for $url")
+                return null
+            }
             val cacheDir = File(context.cacheDir, "media_bridge").also { it.mkdirs() }
             val outFile = File(cacheDir, filename)
             connection.inputStream.use { input ->
                 outFile.outputStream().use { output ->
-                    copyCooperatively(input, output, execution)
+                    copyCooperatively(input, output, execution, MAX_DOWNLOAD_BYTES)
                 }
             }
             if (!outFile.exists() || outFile.length() == 0L) {
                 Log.w(TAG, "download empty file for $url")
-                null
-            } else {
-                outFile
+                outFile.delete()
+                return null
             }
+            val header = readPrefix(outFile, 16)
+            if (!MediaImageBytes.looksLikeImage(header)) {
+                Log.w(TAG, "download body is not an image (magic) for $url")
+                outFile.delete()
+                return null
+            }
+            outFile
         } catch (cancelled: TaskExecutionCancelledException) {
             throw cancelled
         } catch (error: Exception) {
@@ -245,54 +251,25 @@ object MediaBridge {
         execution: TaskExecutionContext?,
     ): Boolean {
         checkExecution(execution)
-        val resolver = context.contentResolver
-        val mime = guessMime(displayName)
-        val values = ContentValues().apply {
-            put(MediaStore.Images.Media.DISPLAY_NAME, displayName)
-            put(MediaStore.Images.Media.MIME_TYPE, mime)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                put(
-                    MediaStore.Images.Media.RELATIVE_PATH,
-                    Environment.DIRECTORY_DCIM + "/Camera",
-                )
-                put(MediaStore.Images.Media.IS_PENDING, 1)
-            }
-        }
-        val collection = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
-        } else {
-            @Suppress("DEPRECATION")
-            MediaStore.Images.Media.EXTERNAL_CONTENT_URI
-        }
-        val uri: Uri = resolver.insert(collection, values) ?: run {
-            Log.w(TAG, "MediaStore insert returned null for $displayName")
+        val header = readPrefix(file, 16)
+        if (!MediaImageBytes.looksLikeImage(header)) {
+            Log.w(TAG, "refuse MediaStore insert for non-image $displayName")
             return false
         }
+        val mime = MediaImageBytes.mimeForBytes(header, displayName)
+        val uri = GalleryMediaWriter.insertImageFile(context, file, displayName, mime)
+        return uri != null
+    }
+
+    private fun readPrefix(file: File, max: Int): ByteArray {
         return try {
-            checkExecution(execution)
-            resolver.openOutputStream(uri)?.use { output ->
-                FileInputStream(file).use { input ->
-                    copyCooperatively(input, output, execution)
-                }
-            } ?: run {
-                Log.w(TAG, "MediaStore openOutputStream null for $displayName")
-                resolver.delete(uri, null, null)
-                return false
+            file.inputStream().use { input ->
+                val buf = ByteArray(max)
+                val n = input.read(buf)
+                if (n <= 0) ByteArray(0) else buf.copyOf(n)
             }
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                checkExecution(execution)
-                values.clear()
-                values.put(MediaStore.Images.Media.IS_PENDING, 0)
-                resolver.update(uri, values, null, null)
-            }
-            true
-        } catch (cancelled: TaskExecutionCancelledException) {
-            resolver.delete(uri, null, null)
-            throw cancelled
-        } catch (error: Exception) {
-            Log.w(TAG, "MediaStore insert failed", error)
-            resolver.delete(uri, null, null)
-            false
+        } catch (_: Exception) {
+            ByteArray(0)
         }
     }
 
@@ -300,12 +277,18 @@ object MediaBridge {
         input: java.io.InputStream,
         output: java.io.OutputStream,
         execution: TaskExecutionContext?,
+        maxBytes: Long = Long.MAX_VALUE,
     ) {
         val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+        var total = 0L
         while (true) {
             checkExecution(execution)
             val count = input.read(buffer)
             if (count < 0) return
+            total += count
+            if (total > maxBytes) {
+                throw java.io.IOException("download exceeded maxBytes=$maxBytes")
+            }
             output.write(buffer, 0, count)
         }
     }
@@ -338,15 +321,5 @@ object MediaBridge {
     private fun fail(code: String, detail: String) {
         lastError.set(code)
         Log.w(TAG, "$code: $detail")
-    }
-
-    private fun guessMime(filename: String): String {
-        val lower = filename.lowercase()
-        return when {
-            lower.endsWith(".png") -> "image/png"
-            lower.endsWith(".webp") -> "image/webp"
-            lower.endsWith(".gif") -> "image/gif"
-            else -> "image/jpeg"
-        }
     }
 }

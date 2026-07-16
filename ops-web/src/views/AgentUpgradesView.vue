@@ -54,6 +54,16 @@ const guideDownloadUrl = computed(() => {
   return agentRelease.value.guide_download_path || '/downloads/device-bind-guide.pdf'
 })
 
+const dpcDownloadUrl = '/downloads/device-controller-latest.apk'
+
+const absoluteDpcUrl = computed(() => `${window.location.origin}${dpcDownloadUrl}`)
+
+const absoluteGuideUrl = computed(() => {
+  if (!guideDownloadUrl.value) return ''
+  if (guideDownloadUrl.value.startsWith('http')) return guideDownloadUrl.value
+  return `${window.location.origin}${guideDownloadUrl.value}`
+})
+
 const agentSizeLabel = computed(() => {
   const bytes = agentRelease.value?.byte_size
   if (bytes == null || bytes < 0) return '—'
@@ -152,6 +162,10 @@ async function copyAgentLink() {
   await copyText(absoluteAgentUrl.value, '已复制 APK 下载链接')
 }
 
+async function copyDpcLink() {
+  await copyText(absoluteDpcUrl.value, '已复制 DPC 下载链接')
+}
+
 async function publishManifest() {
   message.value = ''
   error.value = ''
@@ -232,12 +246,36 @@ onUnmounted(() => {
   <section>
     <h1>远程升级</h1>
     <p class="hint">
-      侧载下载用最新 APK；Device Owner 机走签名 update-manifest + DPC 轮询。推送请优先选
-      Device Controller 上的 enrolled device_id。
+      新机请先下载《绑定安装指引》PDF，用 ADB 安装 Device Controller 并设为 Device Owner（当前机型不支持扫码），再装 Agent。
+      已纳管机远程升级走签名 update-manifest + DPC 轮询；推送请用 enrolled device_id。
     </p>
 
     <p v-if="message" class="ok">{{ message }}</p>
     <p v-if="error" class="error">{{ error }}</p>
+
+    <div class="panel">
+      <h2>新设备准备（ADB Device Owner）</h2>
+      <p class="muted">
+        顺序：恢复出厂 → 装 DPC → <code>dpm set-device-owner</code> → 应用策略禁锁屏 → 装 Agent → 运维台绑定。
+        详见 PDF。
+      </p>
+      <div class="row">
+        <a class="download" :href="dpcDownloadUrl" download="device-controller-latest.apk">
+          下载 Device Controller（DPC）
+        </a>
+        <button type="button" class="ghost" @click="copyDpcLink">复制 DPC 链接</button>
+        <a
+          v-if="guideDownloadUrl"
+          class="download secondary"
+          :href="guideDownloadUrl"
+          download="矩阵助手-新设备绑定安装指引.pdf"
+        >
+          下载新设备绑定安装指引（PDF）
+        </a>
+      </div>
+      <p class="muted mono">{{ absoluteDpcUrl }}</p>
+      <p v-if="absoluteGuideUrl" class="muted mono">{{ absoluteGuideUrl }}</p>
+    </div>
 
     <div class="panel">
       <h2>侧载：最新 Agent APK</h2>
@@ -263,11 +301,6 @@ onUnmounted(() => {
       </template>
       <p v-else class="warn">
         {{ agentRelease?.missing_reason || '服务器尚未发布侧载 Agent APK。' }}
-      </p>
-      <p v-if="guideDownloadUrl" class="guide-row">
-        <a class="guide-link" :href="guideDownloadUrl" download="矩阵助手-新设备绑定安装指引.pdf">
-          下载新设备绑定安装指引（PDF）
-        </a>
       </p>
     </div>
 
@@ -455,6 +488,9 @@ textarea {
   text-decoration: none;
   padding: 8px 14px;
   border-radius: 6px;
+}
+.download.secondary {
+  background: #2d6a4f;
 }
 button {
   font: inherit;

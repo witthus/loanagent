@@ -5,8 +5,9 @@
 #   bash ops/m0/publish-agent-release.sh
 #
 # On the server, sync this directory to /opt/loanagent/agent-releases
-# (mounted read-only into control-plane as /app/agent-releases).
-
+# (APKs mounted read-only into control-plane; update-manifests/ is a writable overlay
+# so Ops can POST signed manifests).
 *.apk
 *.pdf
 latest.json
+!update-manifests/.gitkeep
