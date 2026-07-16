@@ -1,0 +1,5 @@
+# Overlay for wireless ADB from the Mac/LAN (pair/connect to phone IP:port).
+# Used by ops/m0/set-device-owner.sh — do not use for normal Gradle builds.
+services:
+  android-builder:
+    network_mode: host

@@ -230,6 +230,32 @@ async function pushOne(device: FleetDevice) {
   await pushSelected()
 }
 
+async function clearUpgrade(device: FleetDevice) {
+  if (!device.agent_upgrade) return
+  if (
+    !window.confirm(
+      `清除「${deviceDisplayName(device)}」的升级记录（${device.agent_upgrade.status}）？\n` +
+        '用于取消僵尸 pending，或关掉已完成的提示。',
+    )
+  ) {
+    return
+  }
+  saving.value = `clear:${device.device_id}`
+  message.value = ''
+  error.value = ''
+  try {
+    await api(`/api/v1/devices/${encodeURIComponent(device.device_id)}/upgrade`, {
+      method: 'DELETE',
+    })
+    message.value = '已清除升级记录'
+    await load()
+  } catch (err) {
+    error.value = formatApiError(err, '清除升级失败')
+  } finally {
+    saving.value = null
+  }
+}
+
 onMounted(async () => {
   await load()
   refreshTimer = window.setInterval(() => {
@@ -247,7 +273,9 @@ onUnmounted(() => {
     <h1>远程升级</h1>
     <p class="hint">
       新机请先下载《绑定安装指引》PDF，用 ADB 安装 Device Controller 并设为 Device Owner（当前机型不支持扫码），再装 Agent。
-      已纳管机远程升级走签名 update-manifest + DPC 轮询；推送请用 enrolled device_id。
+      已纳管机远程升级走签名 update-manifest + DPC 轮询；推送请用
+      <strong>enrolled device_id</strong>（Device Controller 界面），不要推 Agent 的
+      <code>dev-…</code>（否则易留下僵尸 pending）。Agent 若已升到目标版本，列表会自动标为完成；也可手动「清除」。
     </p>
 
     <p v-if="message" class="ok">{{ message }}</p>
@@ -421,6 +449,15 @@ onUnmounted(() => {
             <td class="muted">{{ device.agent_upgrade?.detail || '—' }}</td>
             <td>
               <button type="button" class="ghost tiny" @click="pushOne(device)">推送</button>
+              <button
+                v-if="device.agent_upgrade"
+                type="button"
+                class="ghost tiny"
+                :disabled="saving === `clear:${device.device_id}`"
+                @click="clearUpgrade(device)"
+              >
+                {{ saving === `clear:${device.device_id}` ? '清除中…' : '清除' }}
+              </button>
             </td>
           </tr>
           <tr v-if="!filteredDevices.length">

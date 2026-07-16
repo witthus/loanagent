@@ -8,6 +8,7 @@ import android.content.Context
 import android.content.Intent
 import android.os.Build
 import android.os.IBinder
+import android.os.PowerManager
 import android.util.Log
 
 /**
@@ -16,6 +17,7 @@ import android.util.Log
  */
 class M0DebugKeepAliveService : Service() {
     private var bridge: CloudBridgeCoordinator? = null
+    private var wakeLock: PowerManager.WakeLock? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -45,22 +47,48 @@ class M0DebugKeepAliveService : Service() {
         if (bridge == null) {
             bridge = CloudBridgeCoordinator(applicationContext).also { it.start() }
         }
+        HeartbeatAlarmScheduler.scheduleNext(applicationContext)
+        if (intent?.getBooleanExtra(EXTRA_FORCE_HEARTBEAT, false) == true) {
+            acquireBriefWakeLock()
+            bridge?.requestHeartbeatNow()
+        }
         return START_STICKY
     }
 
     override fun onDestroy() {
         bridge?.stop()
         bridge = null
+        releaseWakeLock()
         super.onDestroy()
+    }
+
+    private fun acquireBriefWakeLock() {
+        releaseWakeLock()
+        val pm = getSystemService(PowerManager::class.java) ?: return
+        @Suppress("DEPRECATION")
+        val lock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "$TAG:hb").apply {
+            setReferenceCounted(false)
+            acquire(8_000L)
+        }
+        wakeLock = lock
+    }
+
+    private fun releaseWakeLock() {
+        try {
+            wakeLock?.let { if (it.isHeld) it.release() }
+        } catch (_: Exception) {
+        }
+        wakeLock = null
     }
 
     private fun ensureChannel() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
         val manager = getSystemService(NotificationManager::class.java) ?: return
+        // IMPORTANCE_MIN lets HyperOS freeze the process; LOW keeps a quiet but real FGS.
         val channel = NotificationChannel(
             CHANNEL_ID,
-            "M0 debug keep-alive",
-            NotificationManager.IMPORTANCE_MIN,
+            "矩阵助手云桥",
+            NotificationManager.IMPORTANCE_LOW,
         )
         manager.createNotificationChannel(channel)
     }
@@ -69,15 +97,23 @@ class M0DebugKeepAliveService : Service() {
         private const val TAG = "M0DebugKeepAlive"
         private const val CHANNEL_ID = "m0-debug-keepalive"
         private const val NOTIFICATION_ID = 7101
+        const val EXTRA_FORCE_HEARTBEAT = "force_heartbeat"
 
         // Called reflectively from main sources (AgentStatusActivity / M0AccessibilityService).
         @JvmStatic
         fun start(context: Context) {
+            start(context, forceHeartbeat = false)
+        }
+
+        @JvmStatic
+        fun start(context: Context, forceHeartbeat: Boolean) {
             if (!SupportedDeviceGate.isSupported()) {
                 Log.w(TAG, "skip keep-alive start on unsupported device")
                 return
             }
-            val intent = Intent(context, M0DebugKeepAliveService::class.java)
+            val intent = Intent(context, M0DebugKeepAliveService::class.java).apply {
+                putExtra(EXTRA_FORCE_HEARTBEAT, forceHeartbeat)
+            }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 context.startForegroundService(intent)
             } else {

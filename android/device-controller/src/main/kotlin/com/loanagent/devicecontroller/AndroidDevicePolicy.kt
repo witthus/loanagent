@@ -3,6 +3,7 @@ package com.loanagent.devicecontroller
 import android.app.admin.DevicePolicyManager
 import android.content.Context
 import android.content.pm.PackageManager
+import android.os.Build
 
 class AndroidDeviceOwnerState(private val context: Context) {
     private val manager = context.getSystemService(DevicePolicyManager::class.java)
@@ -48,5 +49,10 @@ class AndroidDevicePolicyGateway(context: Context) : DevicePolicyGateway {
         if (!manager.setKeyguardDisabled(admin, disabled)) {
             error("setKeyguardDisabled($disabled) returned false")
         }
+    }
+
+    override fun setUserControlDisabledPackages(packages: List<String>) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return
+        manager.setUserControlDisabledPackages(admin, packages)
     }
 }

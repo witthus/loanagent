@@ -7,13 +7,16 @@ package com.loanagent.agent
  * device_id is per-phone (ANDROID_ID), resolved via [init].
  */
 object CloudBridgeConfig {
+    // Heartbeat/poll must stay on mainland cleartext for now: HTTPS via Japan edge can
+    // hang SSL handshakes past HttpURLConnection timeouts and stall the single heartbeat thread.
     const val CONTROL_PLANE_BASE_URL = "http://119.45.36.208"
     const val MQTT_HOST = "119.45.36.208"
     // Public remap: residential networks often block outbound 1883.
     const val MQTT_PORT = 11883
     const val DEVICE_TOKEN = "cb571ab15f2f873f0fbbb533b16a70a5"
     const val OPS_TOKEN = "admin123"
-    const val HEARTBEAT_INTERVAL_MS = 30_000L
+    /** Target cadence; actual sends also fire on MQTT idle ping. */
+    const val HEARTBEAT_INTERVAL_MS = 15_000L
     const val COMMAND_POLL_INTERVAL_MS = 5_000L
     const val ENSURE_APP_READY_TIMEOUT_MS = 20_000L
 

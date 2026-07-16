@@ -140,6 +140,16 @@ const MAP: Record<string, HumanMessage> = {
     detail: '在线设备不能直接删除，避免误删正在跑任务的手机。',
     nextStep: '等设备离线（或停掉 Agent 心跳）后再删。',
   },
+  DEVICE_OFFLINE: {
+    title: '目标设备离线，无法换绑',
+    detail: '换绑需要新手机在线并完成心跳。',
+    nextStep: '打开矩阵助手等到设备页显示在线，再换绑。',
+  },
+  UPGRADE_NOT_FOUND: {
+    title: '没有可取消的升级记录',
+    detail: '该设备当前没有 pending/历史升级行。',
+    nextStep: '刷新列表；若仍显示升级状态，再试一次。',
+  },
   FINAL_ACTION_BLOCKED: {
     title: '最后一步点「发布」失败了',
     detail: '内容可能已填好，但发布按钮未点中或被拦截。',

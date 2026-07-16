@@ -406,6 +406,10 @@ onUnmounted(() => {
 
     <div class="bind-panel pending">
       <h2>待绑定设备</h2>
+      <p class="muted">
+        离线且未绑定的设备可删除（永久废弃 / 旧机换新后的残留）。在线设备须先停 Agent 等离线。
+        已绑定设备请先到「账号」解绑或换绑。
+      </p>
       <p v-if="!unboundDevices.length" class="muted">
         暂无新设备。安装最新 Agent 并打开应用后，约 30 秒内会出现在这里。
       </p>
@@ -563,6 +567,9 @@ onUnmounted(() => {
               <div>{{ device.agent_version || '—' }}</div>
               <div v-if="device.agent_upgrade?.status" class="muted">
                 <router-link to="/upgrades">升级: {{ device.agent_upgrade.status }}</router-link>
+                <span v-if="device.agent_upgrade.status === 'pending'">
+                  （可到远程升级页「清除」僵尸 pending）
+                </span>
               </div>
             </td>
             <td>

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
@@ -8,6 +9,27 @@ from urllib.parse import urlparse
 import psycopg
 
 from loanagent.update_manifest import load_ring_manifest, public_download_path
+
+_SEMVER = re.compile(r"(\d+)\.(\d+)\.(\d+)")
+
+
+def parse_agent_semver(version: str | None) -> tuple[int, int, int] | None:
+    if not version:
+        return None
+    match = _SEMVER.search(version)
+    if match is None:
+        return None
+    return int(match.group(1)), int(match.group(2)), int(match.group(3))
+
+
+def agent_version_covers(installed: str | None, target: str | None) -> bool:
+    """True when installed Agent semver is >= target (ignores -debug suffixes)."""
+    left = parse_agent_semver(installed)
+    right = parse_agent_semver(target)
+    if left is None or right is None:
+        return False
+    return left >= right
+
 
 
 @dataclass(frozen=True)
@@ -128,6 +150,44 @@ class DeviceUpgradeRepository:
         if row is None:
             raise KeyError(device_id)
         return _from_row(row)
+
+    def clear(self, device_id: str) -> bool:
+        """Remove upgrade row (ops cancel / dismiss). Returns True if a row was deleted."""
+        with psycopg.connect(self.database_url) as connection:
+            row = connection.execute(
+                """
+                DELETE FROM device_agent_upgrades
+                WHERE device_id = %s
+                RETURNING device_id
+                """,
+                (device_id,),
+            ).fetchone()
+        return row is not None
+
+    def reconcile_with_agent_version(
+        self,
+        device_id: str,
+        agent_version: str | None,
+    ) -> DeviceUpgradeRecord | None:
+        """If pending/in_progress and installed Agent already covers ring target, mark succeeded."""
+        record = self.get(device_id)
+        if record is None or record.status not in {"pending", "in_progress"}:
+            return record
+        target: str | None = None
+        if record.ring:
+            hosted = load_ring_manifest(record.ring)
+            if hosted.available:
+                target = hosted.agent_version
+        if not agent_version_covers(agent_version, target):
+            return record
+        return self.report_result(
+            device_id,
+            status="succeeded",
+            detail=(
+                f"AUTO_RESOLVED:agent_version={agent_version}"
+                f":target={target or 'unknown'}"
+            ),
+        )
 
 
 def _from_row(row: tuple[Any, ...]) -> DeviceUpgradeRecord:

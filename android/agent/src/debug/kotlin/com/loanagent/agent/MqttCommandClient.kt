@@ -17,6 +17,7 @@ class MqttCommandClient(
     private val onCommand: (String) -> Unit,
     private val socketFactory: () -> Socket = ::Socket,
     private val joinTimeoutMs: Long = 2_000,
+    private val onIdlePing: (() -> Unit)? = null,
 ) {
     private val started = AtomicBoolean(false)
     private val lifecycle = Any()
@@ -136,6 +137,12 @@ class MqttCommandClient(
                     readPacket(input)
                 } catch (_: java.net.SocketTimeoutException) {
                     writePacket(output, 0xC0, ByteArray(0))
+                    // While MQTT keepalive thread is alive, also refresh HTTP presence.
+                    try {
+                        onIdlePing?.invoke()
+                    } catch (error: Exception) {
+                        Log.w(TAG, "onIdlePing failed", error)
+                    }
                     continue
                 }
                 when (packet.type and 0xF0) {

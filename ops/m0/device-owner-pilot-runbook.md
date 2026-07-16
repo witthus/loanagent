@@ -38,20 +38,27 @@
 
 
 
-## 开通过程
+## 开通过程（仅 ADB Device Owner，不支持扫码）
 
-1. **恢复出厂** → 停在欢迎页（不要登小米账号，不要先进成普通用户）
-2. 连上 **Wi‑Fi**
-3. 欢迎页空白处连点约 **6 下** → 扫 `ops/m0/generated/device-owner.png`
-4. 选 **完全托管 / Fully managed device**
-5. 等 Device Controller 装完并合规
-6. 打开 Device Controller：
+1. **恢复出厂** → 连 Wi‑Fi → **不要**登录小米/谷歌账号 → 进入系统  
+2. 开发者选项：打开 **USB 调试** + **USB 调试（安全设置）** + 无线调试（记下配对端口 / 配对码 / 调试端口，三者分开）  
+3. Docker 设 Owner：
+
+```bash
+bash ops/m0/set-device-owner.sh \
+  --pair <IP:配对端口> \
+  --pair-code <配对码> \
+  --connect <IP:调试端口> \
+  --install-dpc
+```
+
+4. 打开 Device Controller：
   - Device Owner = true
-  - 抄下 **Enrolled device_id**（远程升级推送用这个，不一定等于 Agent 的 `dev-…`）
   - 点「Apply minimum Device Owner policy」
-  - Last recovery / policy 中应有 `KEYGUARD_DISABLED`
-7. 安装同证书 Agent → 开无障碍 + Loanagent 输入法 + 电池无限制 → 登录小红书 → Ops 绑定
-8. **HyperOS 必做（否则灭屏/后台无法拉起小红书）：** 允许 Agent「后台弹出界面」。ADB：
+  - **Last recovery** 含 `KEYGUARD_DISABLED`（写在 `applied=[…]` 里，不是单独一行）
+  - 抄下 **Enrolled device_id**（远程升级用；≠ Agent `dev-…`）
+5. 安装同证书 Agent → 开无障碍 + Loanagent 输入法 + 电池无限制 → 登录小红书 → Ops 绑定
+6. **HyperOS 必做（否则灭屏/后台无法拉起小红书）：** 允许 Agent「后台弹出界面」。ADB：
 
 ```bash
 adb shell appops set com.loanagent.agent 10021 allow   # 后台弹出界面
@@ -62,6 +69,17 @@ adb shell appops set com.loanagent.agent 10008 allow
 也可在系统设置 → 应用 → Loanagent Agent → 其他权限里打开「后台弹出界面」。
 
 **注意：** 不要对 Agent 使用 `force-stop`（会清掉无障碍）。
+
+### 首次开通踩坑 checklist
+
+- [ ] 欢迎页 / 进系统后 **未登录** 小米账号（`dpm` 报 `already some accounts` → 先删账号或再清机）
+- [ ] 已开 **USB 调试（安全设置）**（未开则 `Calling identity is not authorized`，连 `dpm list-owners` 都会失败）
+- [ ] 无线调试：**配对端口** 与 **调试端口** 不同；脚本用 `--pair` + **`--pair-code`**（配对码单独参数）+ `--connect`
+- [ ] `set-device-owner` 成功，或提示 already set 且本 DPC 已是 Owner（勿当成失败）
+- [ ] Device Controller 显示 Device Owner = **true**（看错机 / 未成功设 Owner 时会是 false）
+- [ ] 已点 **Apply minimum Device Owner policy**；Last recovery 出现 `KEYGUARD_DISABLED`
+- [ ] 记下 enrolled id（升级推送）与 Agent `dev-…`（心跳绑定）——二者可能不同
+- [ ] Agent 已开无障碍 + 后台弹出界面；勿 force-stop
 
 ---
 

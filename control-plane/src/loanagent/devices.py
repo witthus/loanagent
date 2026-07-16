@@ -1,11 +1,28 @@
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from datetime import datetime
 
 import psycopg
 
 from loanagent.db import migrate_fleet_schema
+
+
+def heartbeat_stale_after_sec() -> int:
+    """Seconds without HTTP heartbeat before ops marks the device offline.
+
+    Default 90s matches ~15–30s heartbeat cadence. Do not raise this to mask
+    HyperOS scheduling freezes — fix process keep-alive instead.
+    """
+    raw = (os.environ.get("HEARTBEAT_STALE_AFTER_SEC") or "90").strip()
+    try:
+        value = int(raw)
+    except ValueError as error:
+        raise ValueError("HEARTBEAT_STALE_AFTER_SEC must be an integer") from error
+    if value < 30:
+        raise ValueError("HEARTBEAT_STALE_AFTER_SEC must be >= 30")
+    return value
 
 _DEVICE_COLUMNS = """
     device_id, agent_version, manufacturer, model, online, last_seen_at,
@@ -188,13 +205,14 @@ class DeviceRepository:
             ).fetchone()
         return _device_from_row(row)
 
-    def mark_stale_offline(self, *, stale_after_sec: int = 90) -> list[str]:
+    def mark_stale_offline(self, *, stale_after_sec: int | None = None) -> list[str]:
         """Mark devices offline when heartbeat is older than stale_after_sec.
 
         Returns the device_ids that transitioned to offline so callers can cancel
         their open tasks.
         """
-        if stale_after_sec < 1:
+        threshold = heartbeat_stale_after_sec() if stale_after_sec is None else stale_after_sec
+        if threshold < 1:
             raise ValueError("stale_after_sec must be >= 1")
         with psycopg.connect(self.database_url) as connection:
             rows = connection.execute(
@@ -209,7 +227,7 @@ class DeviceRepository:
                   )
                 RETURNING device_id
                 """,
-                (stale_after_sec,),
+                (threshold,),
             ).fetchall()
         return [str(row[0]) for row in rows]
 

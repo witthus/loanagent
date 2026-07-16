@@ -677,3 +677,76 @@ def test_delete_device_rejects_online_or_bound() -> None:
 
         assert DeviceRepository(DATABASE_URL).get(online_id).device_id == online_id
         assert DeviceRepository(DATABASE_URL).get(bound_id).device_id == bound_id
+
+
+def test_clear_device_upgrade_api() -> None:
+    from loanagent.device_upgrades import DeviceUpgradeRepository
+    from loanagent.devices import DeviceRepository
+
+    device_id = unique_id("device-upg-clear")
+    DeviceRepository(DATABASE_URL).migrate()
+    DeviceRepository(DATABASE_URL).create(device_id=device_id, agent_version="0.1.9")
+    DeviceUpgradeRepository(DATABASE_URL).request_upgrade(
+        device_id,
+        manifest_url="https://android.hashhub.com/downloads/update-manifests/canary.json",
+        ring="canary",
+    )
+
+    with TestClient(app) as client:
+        cleared = client.delete(
+            f"/api/v1/devices/{device_id}/upgrade",
+            headers=ops_headers(),
+        )
+        assert cleared.status_code == 200
+        assert cleared.json()["cleared"] is True
+        missing = client.delete(
+            f"/api/v1/devices/{device_id}/upgrade",
+            headers=ops_headers(),
+        )
+        assert missing.status_code == 404
+        assert missing.json()["detail"]["code"] == "UPGRADE_NOT_FOUND"
+
+
+def test_account_rebind_api() -> None:
+    from loanagent.devices import DeviceRepository
+
+    old_id = unique_id("device-rebind-old")
+    new_id = unique_id("device-rebind-new")
+    account_id = unique_id("account-rebind")
+    DeviceRepository(DATABASE_URL).migrate()
+    DeviceRepository(DATABASE_URL).heartbeat(
+        device_id=old_id, agent_version="0.1.10", a11y_bound=True
+    )
+    DeviceRepository(DATABASE_URL).heartbeat(
+        device_id=new_id, agent_version="0.1.10", a11y_bound=True
+    )
+
+    with TestClient(app) as client:
+        created = client.post(
+            "/api/v1/accounts",
+            headers=ops_headers(),
+            json={
+                "account_id": account_id,
+                "role": AccountRole.PUBLISHER_MAIN.value,
+                "device_id": old_id,
+                "display_name": "换绑测试",
+            },
+        )
+        assert created.status_code == 200
+
+        rebound = client.post(
+            f"/api/v1/accounts/{account_id}/rebind",
+            headers=ops_headers(),
+            json={"device_id": new_id},
+        )
+        assert rebound.status_code == 200
+        assert rebound.json()["device_id"] == new_id
+
+        DeviceRepository(DATABASE_URL).patch(old_id, online=False)
+        offline = client.post(
+            f"/api/v1/accounts/{account_id}/rebind",
+            headers=ops_headers(),
+            json={"device_id": old_id},
+        )
+        assert offline.status_code == 409
+        assert offline.json()["detail"]["code"] == "DEVICE_OFFLINE"

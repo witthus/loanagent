@@ -192,15 +192,37 @@ HyperOS / 当前试点机型**不支持**欢迎页扫码开通。用户侧完整
 运维摘要：
 
 1. 恢复出厂，**不要**登录小米账号；打开 USB/无线调试。  
-2. `adb install -r` Device Controller，再：
+2. 用 Docker ADB 脚本安装 DPC 并设为 Device Owner（推荐）：
 
 ```bash
-adb shell dpm set-device-owner \
-  com.loanagent.devicecontroller/com.loanagent.devicecontroller.LoanAgentDeviceAdminReceiver
+# 无线调试（配对码单独参数，勿跟在 --pair 后面）
+bash ops/m0/set-device-owner.sh \
+  --pair 192.168.10.18:40271 \
+  --pair-code 822087 \
+  --connect 192.168.10.18:40129 \
+  --install-dpc
+
+# USB 已连上时
+bash ops/m0/set-device-owner.sh --install-dpc
 ```
 
-3. 打开 Device Controller → Device Owner = true →「Apply minimum Device Owner policy」→ 确认 `KEYGUARD_DISABLED`。  
+脚本在宿主会自动 `docker compose … android-builder` 跑 adb；组件为  
+`com.loanagent.devicecontroller/...LoanAgentDeviceAdminReceiver`。
+
+3. 打开 Device Controller → Device Owner = true →「Apply minimum Device Owner policy」→ **Last recovery** 确认含 `KEYGUARD_DISABLED`（在 `applied=[…]` 内）。  
 4. 再装同证书 Agent，开无障碍 / IME / 电池 / HyperOS「后台弹出界面」，登录小红书，Ops 绑定。
+
+### 4.1 首次开通踩坑 checklist
+
+| 现象 | 原因 / 处理 |
+|------|-------------|
+| `Calling identity is not authorized` | 未开「USB 调试（安全设置）」→ 开发者选项打开并确认 |
+| `already some accounts on the device` | 仍有小米/谷歌账号 → 设置里退出删除，或再清机且欢迎页不登录 |
+| `device owner … is already set` | 本 DPC 已是 Owner → 视为成功，去点 Apply policy |
+| 界面 Device Owner = false | 看错机，或 set-device-owner 未成功 → `adb shell dpm list-owners` 核对 |
+| 看不到 KEYGUARD_DISABLED | 未点 Apply policy；看 **Last recovery** 的 `applied=[…]`，不是单独标题 |
+| 无线 pair/connect 失败 | 配对端口 ≠ 调试端口；配对码用 `--pair-code`；端口变更需重新 pair |
+| 远程升级无反应 | 推送到 enrolled id，不是 Agent `dev-…`；ADB-DO 机还需 DPC 内有 update 公钥配置 |
 
 （历史扫码流程已停用，勿再生成 enrollment QR 给用户。）
 

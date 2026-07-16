@@ -58,6 +58,9 @@ interface DevicePolicyGateway {
     fun isLockTaskPermitted(packageName: String): Boolean
 
     fun setKeyguardDisabled(disabled: Boolean)
+
+    /** Best-effort: prevent force-stop / clear-data on listed packages (API 30+). */
+    fun setUserControlDisabledPackages(packages: List<String>) {}
 }
 
 class PolicyCoordinator(private val gateway: DevicePolicyGateway) {
@@ -142,6 +145,13 @@ class PolicyCoordinator(private val gateway: DevicePolicyGateway) {
                 )
             }
         applied += PolicyCapability.KEYGUARD_DISABLED
+
+        // Soft keep-alive: block user force-stop on Agent (and DPC) when API available.
+        runCatching {
+            gateway.setUserControlDisabledPackages(
+                listOf(agentPackage, ownerState.ownerPackage).mapNotNull { it }.distinct(),
+            )
+        }
 
         return PolicyApplicationResult(
             status = PolicyStatus.APPLIED,

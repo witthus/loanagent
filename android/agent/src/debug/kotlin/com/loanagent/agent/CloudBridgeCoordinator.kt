@@ -443,6 +443,7 @@ class CloudBridgeCoordinator(
     private var pollFuture: ScheduledFuture<*>? = null
     private var mqtt: MqttCommandClient? = null
     private var engine: PlaybookEngine? = null
+    private var sendHeartbeat: Runnable? = null
 
     fun start() {
         check(!closed.get()) { "CloudBridgeCoordinator is permanently stopped" }
@@ -469,23 +470,27 @@ class CloudBridgeCoordinator(
                 timeoutScheduler = ExecutorCommandTimeoutScheduler(commandTimeoutExecutor),
             )
             dispatcher.recoverPending()
-            // Heartbeat and command poll must not share one thread: a stalled poll/HTTP
-            // call would otherwise starve heartbeats and flip the device offline.
-            heartbeatFuture = heartbeatScheduler.scheduleAtFixedRate(
-                {
-                    if (!started.get()) return@scheduleAtFixedRate
-                    try {
-                        heartbeatClient.send(
-                            a11yBound = runtime.accessibilityAlive(),
-                            wifiConnected = networkWifi(context),
-                            cellularOk = networkCellular(context),
-                            manufacturer = android.os.Build.MANUFACTURER,
-                            model = android.os.Build.MODEL,
-                        )
-                    } catch (error: Exception) {
-                        Log.w(TAG, "heartbeat failed", error)
-                    }
-                },
+            val lastPresenceAttemptMs = java.util.concurrent.atomic.AtomicLong(0L)
+            val sendHeartbeat = Runnable {
+                if (!started.get()) return@Runnable
+                lastPresenceAttemptMs.set(SystemClock.elapsedRealtime())
+                try {
+                    heartbeatClient.send(
+                        a11yBound = runtime.accessibilityAlive(),
+                        wifiConnected = networkWifi(context),
+                        cellularOk = networkCellular(context),
+                        manufacturer = android.os.Build.MANUFACTURER,
+                        model = android.os.Build.MODEL,
+                    )
+                } catch (error: Exception) {
+                    Log.w(TAG, "heartbeat failed", error)
+                }
+            }
+            this.sendHeartbeat = sendHeartbeat
+            // Fixed delay (not fixed rate): a slow/failed HTTP call must not pile up
+            // and starve the next presence refresh.
+            heartbeatFuture = heartbeatScheduler.scheduleWithFixedDelay(
+                sendHeartbeat,
                 0,
                 CloudBridgeConfig.HEARTBEAT_INTERVAL_MS,
                 TimeUnit.MILLISECONDS,
@@ -526,6 +531,15 @@ class CloudBridgeCoordinator(
                         }
                     }
                 },
+                onIdlePing = {
+                    // Only nudge if the dedicated heartbeat worker has been quiet.
+                    if (started.get()) {
+                        val idleFor = SystemClock.elapsedRealtime() - lastPresenceAttemptMs.get()
+                        if (idleFor >= CloudBridgeConfig.HEARTBEAT_INTERVAL_MS) {
+                            heartbeatScheduler.execute(sendHeartbeat)
+                        }
+                    }
+                },
             ).also { it.start() }
             CloudBridgeStatusHub.update {
                 it.copy(
@@ -534,6 +548,7 @@ class CloudBridgeCoordinator(
                 )
             }
             Log.i(TAG, "cloud bridge started for ${CloudBridgeConfig.DEVICE_ID}")
+            HeartbeatAlarmScheduler.scheduleNext(context)
         } catch (error: Exception) {
             Log.e(TAG, "cloud bridge start failed", error)
             CloudBridgeStatusHub.update { it.copy(bridgeRunning = false) }
@@ -542,9 +557,18 @@ class CloudBridgeCoordinator(
         }
     }
 
+    /** Fire one heartbeat immediately (AlarmManager / FGS re-entry path). */
+    fun requestHeartbeatNow() {
+        val task = sendHeartbeat ?: return
+        if (!started.get()) return
+        heartbeatScheduler.execute(task)
+    }
+
     fun stop(): Boolean {
         closed.set(true)
         started.set(false)
+        sendHeartbeat = null
+        HeartbeatAlarmScheduler.cancel(context)
         CloudBridgeStatusHub.update { it.copy(bridgeRunning = false) }
         heartbeatFuture?.cancel(true)
         heartbeatFuture = null

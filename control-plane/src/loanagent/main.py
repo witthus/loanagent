@@ -266,6 +266,8 @@ def heartbeat_device(
         geo_label=geo_label,
         **payload.model_dump(),
     )
+    upgrades: DeviceUpgradeRepository = request.app.state.device_upgrade_repository
+    upgrades.reconcile_with_agent_version(device_id, record.agent_version)
     if public_ip and needs_geo_refresh(public_ip) and begin_geo_refresh(public_ip):
         background_tasks.add_task(
             _refresh_device_geo_background,
@@ -307,7 +309,12 @@ def list_devices(request: Request) -> list[dict]:
     out: list[dict] = []
     for device in repository.list():
         body = asdict(device)
-        upgrade = upgrades.get(device.device_id)
+        upgrade = upgrades.reconcile_with_agent_version(
+            device.device_id,
+            device.agent_version,
+        )
+        if upgrade is None:
+            upgrade = upgrades.get(device.device_id)
         body["agent_upgrade"] = None if upgrade is None else upgrade.as_dict()
         out.append(body)
     return out
@@ -318,13 +325,16 @@ def get_device(device_id: str, request: Request) -> dict:
     repository: DeviceRepository = request.app.state.device_repository
     upgrades: DeviceUpgradeRepository = request.app.state.device_upgrade_repository
     try:
-        body = asdict(repository.get(device_id))
+        device = repository.get(device_id)
     except DeviceNotFoundError as error:
         raise HTTPException(
             status_code=404,
             detail={"code": "DEVICE_NOT_FOUND", "message": "Device does not exist."},
         ) from error
-    upgrade = upgrades.get(device_id)
+    body = asdict(device)
+    upgrade = upgrades.reconcile_with_agent_version(device_id, device.agent_version)
+    if upgrade is None:
+        upgrade = upgrades.get(device_id)
     body["agent_upgrade"] = None if upgrade is None else upgrade.as_dict()
     return body
 
@@ -412,6 +422,71 @@ def list_accounts(
 ) -> list[dict]:
     repository: AccountRepository = request.app.state.account_repository
     return [asdict(account) for account in repository.list(platform=platform)]
+
+
+class AccountRebindPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    device_id: str = Field(min_length=1, max_length=128)
+
+
+@app.post(
+    "/api/v1/accounts/{account_id}/rebind",
+    dependencies=[Depends(require_ops)],
+)
+def rebind_account(
+    account_id: str,
+    payload: AccountRebindPayload,
+    request: Request,
+) -> dict:
+    """Move an account onto another online, unbound device in one step."""
+    accounts: AccountRepository = request.app.state.account_repository
+    devices: DeviceRepository = request.app.state.device_repository
+    devices.mark_stale_offline()
+    try:
+        accounts.get(account_id)
+    except AccountNotFoundError as error:
+        raise _account_http_error(
+            404,
+            "ACCOUNT_NOT_FOUND",
+            "Account does not exist.",
+        ) from error
+    try:
+        device = devices.get(payload.device_id)
+    except DeviceNotFoundError as error:
+        raise _account_http_error(
+            404,
+            "DEVICE_NOT_FOUND",
+            "Device does not exist.",
+        ) from error
+    if device.online is not True:
+        raise _account_http_error(
+            409,
+            "DEVICE_OFFLINE",
+            "Target device is offline; wait for heartbeat then rebind.",
+        )
+    other = accounts.find_by_device_id(payload.device_id)
+    if other is not None and other.account_id != account_id:
+        raise _account_http_error(
+            409,
+            "DEVICE_ALREADY_BOUND",
+            "Device is already bound to an account.",
+        )
+    try:
+        account = accounts.update(account_id, device_id=payload.device_id)
+    except AccountDeviceAlreadyBoundError as error:
+        raise _account_http_error(
+            409,
+            "DEVICE_ALREADY_BOUND",
+            "Device is already bound to an account.",
+        ) from error
+    except AccountDeviceNotFoundError as error:
+        raise _account_http_error(
+            404,
+            "DEVICE_NOT_FOUND",
+            "Device does not exist.",
+        ) from error
+    return asdict(account)
 
 
 @app.patch("/api/v1/accounts/{account_id}", dependencies=[Depends(require_ops)])
@@ -639,6 +714,22 @@ def report_device_upgrade_result(
             status_code=404,
             detail={"code": "UPGRADE_NOT_FOUND", "message": "No upgrade row for device."},
         ) from error
+
+
+@app.delete(
+    "/api/v1/devices/{device_id}/upgrade",
+    dependencies=[Depends(require_ops)],
+)
+def clear_device_upgrade(device_id: str, request: Request) -> dict:
+    """Ops: cancel/dismiss pending or terminal upgrade row for a device."""
+    upgrades: DeviceUpgradeRepository = request.app.state.device_upgrade_repository
+    cleared = upgrades.clear(device_id)
+    if not cleared:
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "UPGRADE_NOT_FOUND", "message": "No upgrade row for device."},
+        )
+    return {"ok": True, "device_id": device_id, "cleared": True}
 
 
 @app.get("/downloads/agent-latest.apk")

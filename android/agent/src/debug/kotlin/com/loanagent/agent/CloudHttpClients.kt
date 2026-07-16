@@ -66,8 +66,8 @@ class HeartbeatClient(
         }
         return try {
             connection.requestMethod = "POST"
-            connection.connectTimeout = 8_000
-            connection.readTimeout = 8_000
+            connection.connectTimeout = 5_000
+            connection.readTimeout = 5_000
             connection.doOutput = true
             connection.setRequestProperty("Content-Type", "application/json; charset=utf-8")
             headers.forEach { (k, v) -> connection.setRequestProperty(k, v) }

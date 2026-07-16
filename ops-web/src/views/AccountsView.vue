@@ -66,6 +66,16 @@ const unboundDeviceCount = computed(() => {
   return allDevices.value.filter((d) => !used.has(d.device_id)).length
 })
 
+const unboundOnlineDevices = computed(() => {
+  const used = new Set(
+    allAccounts.value.map((a) => a.device_id).filter(Boolean) as string[],
+  )
+  return allDevices.value.filter((d) => !used.has(d.device_id) && d.online !== false)
+})
+
+const rebindAccountId = ref('')
+const rebindDeviceId = ref('')
+
 const summary = computed(() => {
   let ready = 0
   let offline = 0
@@ -204,6 +214,46 @@ async function unbindAccount(account: Account) {
   }
 }
 
+function startRebind(account: Account) {
+  rebindAccountId.value = account.account_id
+  rebindDeviceId.value = unboundOnlineDevices.value[0]?.device_id || ''
+  message.value = ''
+  error.value = ''
+}
+
+async function confirmRebind() {
+  if (!rebindAccountId.value || !rebindDeviceId.value) {
+    error.value = '请选择要换绑的在线未绑定设备'
+    return
+  }
+  const account = allAccounts.value.find((a) => a.account_id === rebindAccountId.value)
+  const label = account ? accountDisplayName(account) : rebindAccountId.value
+  if (
+    !window.confirm(
+      `将「${label}」换绑到 ${rebindDeviceId.value}？\n旧设备会变为未绑定，离线后可在设备页删除。`,
+    )
+  ) {
+    return
+  }
+  saving.value = `rebind:${rebindAccountId.value}`
+  message.value = ''
+  error.value = ''
+  try {
+    await api(`/api/v1/accounts/${encodeURIComponent(rebindAccountId.value)}/rebind`, {
+      method: 'POST',
+      body: JSON.stringify({ device_id: rebindDeviceId.value }),
+    })
+    message.value = '已换绑到新设备'
+    rebindAccountId.value = ''
+    rebindDeviceId.value = ''
+    await load()
+  } catch (err) {
+    error.value = formatApiError(err, '换绑失败')
+  } finally {
+    saving.value = null
+  }
+}
+
 async function pauseAccount(account: Account) {
   if (!window.confirm(`暂停「${accountDisplayName(account)}」？暂停后不会再下发任务。`)) return
   saving.value = `pause:${account.account_id}`
@@ -274,6 +324,36 @@ onUnmounted(() => {
     </div>
     <p v-if="message" class="ok">{{ message }}</p>
     <p v-if="error" class="error">{{ error }}</p>
+
+    <div v-if="rebindAccountId" class="edit-panel">
+      <h2>换绑设备</h2>
+      <p class="muted">
+        账号 <code>{{ rebindAccountId }}</code> → 选一台在线且未绑定的手机。旧设备解绑后若离线，可在设备页删除。
+      </p>
+      <div class="edit-grid">
+        <label>
+          新设备
+          <select v-model="rebindDeviceId">
+            <option disabled value="">请选择</option>
+            <option v-for="d in unboundOnlineDevices" :key="d.device_id" :value="d.device_id">
+              {{ deviceDisplayName(d) }} · {{ d.device_id }}
+              {{ d.agent_version ? ` · ${d.agent_version}` : '' }}
+            </option>
+          </select>
+        </label>
+      </div>
+      <div class="actions">
+        <button
+          type="button"
+          class="primary"
+          :disabled="saving === `rebind:${rebindAccountId}` || !rebindDeviceId"
+          @click="confirmRebind"
+        >
+          {{ saving === `rebind:${rebindAccountId}` ? '换绑中…' : '确认换绑' }}
+        </button>
+        <button type="button" :disabled="!!saving" @click="rebindAccountId = ''">取消</button>
+      </div>
+    </div>
 
     <div v-if="editing" class="edit-panel">
       <h2>编辑账号</h2>
@@ -385,6 +465,14 @@ onUnmounted(() => {
               @click="unbindAccount(row.account)"
             >
               解绑
+            </button>
+            <button
+              type="button"
+              :disabled="!!saving || !unboundOnlineDevices.length"
+              :title="unboundOnlineDevices.length ? '' : '没有在线的未绑定设备可换绑'"
+              @click="startRebind(row.account)"
+            >
+              换绑
             </button>
             <button
               type="button"

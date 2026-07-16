@@ -60,3 +60,36 @@ def test_request_and_pending(upgrades: DeviceUpgradeRepository) -> None:
     assert pending is not None
     upgrades.report_result("dev-upgrade-1", status="succeeded", detail="SUCCESS")
     assert upgrades.pending_for_device("dev-upgrade-1") is None
+
+
+def test_clear_upgrade_removes_row(upgrades: DeviceUpgradeRepository) -> None:
+    upgrades.request_upgrade(
+        "dev-upgrade-1",
+        ring="canary",
+        public_base_url="https://cp.example.com",
+    )
+    assert upgrades.clear("dev-upgrade-1") is True
+    assert upgrades.get("dev-upgrade-1") is None
+    assert upgrades.clear("dev-upgrade-1") is False
+
+
+def test_reconcile_marks_succeeded_when_agent_covers_target(
+    upgrades: DeviceUpgradeRepository,
+) -> None:
+    upgrades.request_upgrade(
+        "dev-upgrade-1",
+        ring="canary",
+        public_base_url="https://cp.example.com",
+    )
+    resolved = upgrades.reconcile_with_agent_version("dev-upgrade-1", "0.2.0-debug")
+    assert resolved is not None
+    assert resolved.status == "succeeded"
+    assert "AUTO_RESOLVED" in (resolved.detail or "")
+
+
+def test_agent_version_covers() -> None:
+    from loanagent.device_upgrades import agent_version_covers
+
+    assert agent_version_covers("0.1.10-debug", "0.1.10") is True
+    assert agent_version_covers("0.1.9", "0.1.10") is False
+    assert agent_version_covers(None, "0.1.10") is False
